@@ -1,0 +1,46 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - CloudWatch
+  alarms and dashboard covering the edge, load balancer, compute and database
+  tiers.
+
+Metadata:
+  ImplementationStatus: PLACEHOLDER
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W2001 # TODO: remove once real resources consume the parameters
+
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+    Description: Project prefix for resource names.
+  Environment:
+    Type: String
+    AllowedValues: [dev, prod]
+    Description: Deployment environment.
+  LogRetentionDays:
+    Type: Number
+    Description: Default retention for log groups created here.
+  # TODO: AlarmTopicArn, AlbFullName, TargetGroupFullName,
+  #       AutoScalingGroupName, DbInstanceIdentifier
+
+# TODO: Planned resources (all alarms -> AlarmTopicArn for ALARM and OK)
+#   ALB      HTTPCode_ELB_5XX_Count, HTTPCode_Target_5XX_Count,
+#            TargetResponseTime p95, UnHealthyHostCount > 0
+#   ASG      CPUUtilization high (sustained), GroupInServiceInstances < min
+#   RDS      CPUUtilization, FreeStorageSpace, FreeableMemory,
+#            DatabaseConnections, ReadLatency/WriteLatency
+#   WAF      BlockedRequests spike (informational)
+#   Dashboard  <project>-<env>-overview
+#
+# TODO: Audit logging - an AWS CloudTrail trail (multi-region, log file
+# validation, KMS-encrypted, delivered to a dedicated S3 bucket and CloudWatch
+# Logs) is planned as a separate template, monitoring/cloudtrail.yml.
+Resources:
+  PlaceholderResource:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+# TODO: Planned outputs
+#   DashboardName

@@ -1,0 +1,50 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - AWS WAF web
+  ACL protecting the CloudFront distribution.
+
+Metadata:
+  ImplementationStatus: PLACEHOLDER
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W2001 # TODO: remove once real resources consume the parameters
+
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+    Description: Project prefix for resource names.
+  Environment:
+    Type: String
+    AllowedValues: [dev, prod]
+    Description: Deployment environment.
+  LogRetentionDays:
+    Type: Number
+    Description: Retention for WAF logs.
+  RateLimitPerIp:
+    Type: Number
+    Default: 1000
+    MinValue: 100
+    Description: Max requests per source IP per 5-minute window before blocking.
+
+# IMPORTANT: a web ACL with Scope CLOUDFRONT must be created in us-east-1.
+# This project deploys the root stack to us-east-1 for that reason. Deploying
+# elsewhere requires a separate us-east-1 stack for this template.
+#
+# TODO: Planned resources
+#   WebACL  <project>-<env>-web-acl, Scope: CLOUDFRONT, DefaultAction: Allow
+#     AWSManagedRulesAmazonIpReputationList
+#     AWSManagedRulesCommonRuleSet
+#     AWSManagedRulesKnownBadInputsRuleSet
+#     AWSManagedRulesSQLiRuleSet
+#     Rate-based rule (RateLimitPerIp)
+#     VisibilityConfig with CloudWatch metrics on every rule
+#   WAF log group  aws-waf-logs-<project>-<env> (prefix required by WAF)
+#   LoggingConfiguration  redact Authorization and Cookie headers
+Resources:
+  PlaceholderResource:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+# TODO: Planned outputs
+#   WebAclArn

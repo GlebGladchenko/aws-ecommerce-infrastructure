@@ -1,0 +1,51 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - network:
+  VPC across two Availability Zones with public, private application and
+  private data subnets, Internet Gateway and NAT Gateway(s).
+
+Metadata:
+  # Checked by scripts/deploy.sh. Set to IMPLEMENTED when this template is complete.
+  ImplementationStatus: PLACEHOLDER
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W2001 # TODO: remove once real resources consume the parameters
+
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+    Description: Project prefix for resource names.
+  Environment:
+    Type: String
+    AllowedValues: [dev, prod]
+    Description: Deployment environment.
+  VpcCidr:
+    Type: String
+    Description: VPC CIDR block (e.g. 10.10.0.0/16).
+  NatGatewayMode:
+    Type: String
+    AllowedValues: [single, per-az]
+    Description: One shared NAT Gateway, or one per AZ for high availability.
+
+# TODO: Planned resources
+#   VPC                  <project>-<env>-vpc, DNS support + hostnames enabled
+#   Subnets (x6)         derived with !Cidr; AZs selected with !Select [n, !GetAZs ""]
+#     public-a/b         ALB + NAT Gateways; MapPublicIpOnLaunch: false
+#     app-a/b            EC2 Auto Scaling group; default route -> NAT Gateway
+#     data-a/b           RDS only; no route to the internet at all
+#   InternetGateway + VPCGatewayAttachment
+#   NAT Gateway(s) + EIP(s)  Condition on NatGatewayMode (single | per-az)
+#   Route tables         public (0.0.0.0/0 -> IGW), app per AZ (-> NAT), data (local only)
+#   S3 Gateway endpoint  keeps S3/ECR layer traffic off the NAT Gateway (cost + security)
+#   VPC Flow Logs        to CloudWatch Logs, with a scoped IAM role
+#   Name tags            <project>-<env>-<tier>-<az-suffix>
+Resources:
+  # TODO: replace with the resources above. This no-op handle only keeps the
+  # template syntactically valid; it is never meant to be deployed.
+  PlaceholderResource:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+# TODO: Planned outputs (consumed by main.yml via !GetAtt NetworkStack.Outputs.<Name>)
+#   VpcId, VpcCidr, PublicSubnetIds, AppSubnetIds, DataSubnetIds  (subnet lists comma-joined)

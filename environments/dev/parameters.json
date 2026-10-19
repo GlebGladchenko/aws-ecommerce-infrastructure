@@ -1,0 +1,29 @@
+{
+  "Parameters": {
+    "ProjectName": "ecommerce",
+    "Environment": "dev",
+    "VpcCidr": "10.10.0.0/16",
+    "NatGatewayMode": "single",
+    "AppInstanceType": "t3.micro",
+    "AppContainerPort": "8000",
+    "AppHealthCheckPath": "/health",
+    "AsgMinSize": "1",
+    "AsgMaxSize": "2",
+    "AsgDesiredCapacity": "1",
+    "AlbCertificateArn": "",
+    "DbInstanceClass": "db.t4g.micro",
+    "DbAllocatedStorage": "20",
+    "DbMultiAz": "false",
+    "DbBackupRetentionDays": "1",
+    "AlarmEmail": "",
+    "LogRetentionDays": "14"
+  },
+  "Tags": {
+    "Project": "aws-ecommerce",
+    "Environment": "dev",
+    "Owner": "platform-team",
+    "CostCenter": "portfolio",
+    "ManagedBy": "CloudFormation",
+    "Repository": "aws-ecommerce-infrastructure"
+  }
+}

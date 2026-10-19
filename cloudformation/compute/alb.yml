@@ -1,0 +1,50 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - internet-facing
+  Application Load Balancer in the public subnets of both AZs, with a target
+  group for the FastAPI application instances.
+
+Metadata:
+  ImplementationStatus: PLACEHOLDER
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W2001 # TODO: remove once real resources consume the parameters
+
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+    Description: Project prefix for resource names.
+  Environment:
+    Type: String
+    AllowedValues: [dev, prod]
+    Description: Deployment environment.
+  AppContainerPort:
+    Type: Number
+    Description: Target group port (application container port).
+  AppHealthCheckPath:
+    Type: String
+    Description: Target group health check path.
+  AlbCertificateArn:
+    Type: String
+    Default: ""
+    Description: Optional ACM certificate ARN; enables the HTTPS listener when set.
+  # TODO: VpcId, PublicSubnetIds, AlbSecurityGroupId, AccessLogsBucketName
+
+# TODO: Planned resources
+#   LoadBalancer       <project>-<env>-alb; access logs -> logs bucket;
+#                      routing.http.drop_invalid_header_fields.enabled = true;
+#                      deletion_protection.enabled = true in prod
+#   TargetGroup        HTTP:AppContainerPort, health check AppHealthCheckPath,
+#                      deregistration delay ~30s
+#   Listener HTTPS     (Condition HasCertificate) ELBSecurityPolicy-TLS13-1-2-2021-06
+#   Listener HTTP      redirect to HTTPS when a certificate exists, otherwise
+#                      forward (dev-only bootstrap)
+#   Listener rule      reject requests missing the CloudFront origin-verify header
+Resources:
+  PlaceholderResource:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+# TODO: Planned outputs
+#   AlbArn, AlbDnsName, AlbFullName, TargetGroupArn, TargetGroupFullName

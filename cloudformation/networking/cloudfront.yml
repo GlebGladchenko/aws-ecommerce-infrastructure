@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - CloudFront
+  distribution in front of the ALB (API) and the S3 assets bucket.
+
+Metadata:
+  ImplementationStatus: PLACEHOLDER
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W2001 # TODO: remove once real resources consume the parameters
+
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+    Description: Project prefix for resource names.
+  Environment:
+    Type: String
+    AllowedValues: [dev, prod]
+    Description: Deployment environment.
+  # TODO: AlbDnsName, AssetsBucketName, AssetsBucketRegionalDomainName,
+  #       LogsBucketName, WebAclArn, (optional) DomainName + us-east-1 ACM cert
+
+# TODO: Planned resources
+#   OriginAccessControl   SigV4 signing for the S3 origin (no public bucket)
+#   Distribution
+#     Origins           ALB (HTTPS only, custom origin-verify header) and S3 (OAC)
+#     DefaultBehavior   -> ALB; managed CachingDisabled +
+#                          AllViewerExceptHostHeader origin request policy
+#     /static/*         -> S3; managed CachingOptimized
+#     ViewerProtocolPolicy redirect-to-https, MinimumProtocolVersion TLSv1.2_2021
+#     HttpVersion http2and3, PriceClass_100, WebACLId: WebAclArn
+#     ResponseHeadersPolicy SecurityHeadersPolicy (HSTS, nosniff, frame options)
+#     Logging -> LogsBucketName
+Resources:
+  PlaceholderResource:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+# TODO: Planned outputs
+#   DistributionId, DistributionArn, DistributionDomainName

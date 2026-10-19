@@ -1,0 +1,43 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - S3 buckets
+  for static/product assets (served via CloudFront) and access logs.
+
+Metadata:
+  ImplementationStatus: PLACEHOLDER
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W2001 # TODO: remove once real resources consume the parameters
+
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+    Description: Project prefix for resource names.
+  Environment:
+    Type: String
+    AllowedValues: [dev, prod]
+    Description: Deployment environment.
+
+# TODO: Planned resources
+#   AssetsBucket   <project>-<env>-assets-<account-id>-<region> (globally unique)
+#   LogsBucket     <project>-<env>-logs-<account-id>-<region>
+#                  (ALB + CloudFront access logs; lifecycle expiry)
+#   Both buckets:
+#     PublicAccessBlockConfiguration: all four settings true
+#     OwnershipControls: BucketOwnerEnforced (ACLs disabled; CloudFront
+#                        standard logging v2 or an explicit exception needed)
+#     BucketEncryption: SSE-S3 (or SSE-KMS for assets)
+#     VersioningConfiguration on assets; lifecycle rules for old versions/logs
+#     Bucket policy denying aws:SecureTransport = false
+#     DeletionPolicy / UpdateReplacePolicy: Retain
+#   AssetsBucketPolicy  s3:GetObject only for the CloudFront distribution (OAC,
+#                       AWS:SourceArn condition) - added once the CDN exists
+Resources:
+  PlaceholderResource:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+# TODO: Planned outputs
+#   AssetsBucketName, AssetsBucketArn, AssetsBucketRegionalDomainName,
+#   LogsBucketName, LogsBucketArn

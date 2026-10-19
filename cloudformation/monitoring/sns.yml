@@ -1,0 +1,39 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - SNS topic
+  that receives CloudWatch alarm notifications.
+
+Metadata:
+  ImplementationStatus: PLACEHOLDER
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W2001 # TODO: remove once real resources consume the parameters
+
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+    Description: Project prefix for resource names.
+  Environment:
+    Type: String
+    AllowedValues: [dev, prod]
+    Description: Deployment environment.
+  AlarmEmail:
+    Type: String
+    Default: ""
+    Description: Optional email subscription for alarm notifications.
+
+# TODO: Planned resources
+#   AlertsKmsKey   customer managed key whose policy allows cloudwatch.amazonaws.com
+#                  to use it (the AWS managed alias/aws/sns key does NOT allow
+#                  CloudWatch alarms to publish to an encrypted topic)
+#   AlarmTopic     <project>-<env>-alarms, KmsMasterKeyId: AlertsKmsKey
+#   TopicPolicy    sns:Publish only from cloudwatch.amazonaws.com in this account
+#   Subscription   email, Condition HasAlarmEmail (requires manual confirmation)
+Resources:
+  PlaceholderResource:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+# TODO: Planned outputs
+#   AlarmTopicArn

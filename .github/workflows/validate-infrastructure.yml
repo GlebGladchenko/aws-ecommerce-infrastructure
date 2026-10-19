@@ -1,0 +1,74 @@
+name: Validate Infrastructure
+
+on:
+  pull_request:
+    paths:
+      - "cloudformation/**"
+      - "environments/**"
+      - "scripts/**"
+      - ".cfnlintrc.yml"
+      - ".github/workflows/validate-infrastructure.yml"
+  push:
+    branches: [main]
+    paths:
+      - "cloudformation/**"
+      - "environments/**"
+      - "scripts/**"
+      - ".cfnlintrc.yml"
+      - ".github/workflows/validate-infrastructure.yml"
+  workflow_dispatch:
+
+# Least privilege by default; jobs that need more request it explicitly.
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint templates, parameters and scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # TODO: pin third-party actions to full commit SHAs.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install cfn-lint
+        run: pip install "cfn-lint==1.57.2"
+
+      # jq and shellcheck are preinstalled on ubuntu-latest runners.
+      - name: Run offline validation
+        run: ./scripts/validate.sh
+
+  aws-validate:
+    name: Validate templates with the CloudFormation API
+    needs: lint
+    # Opt-in: runs only after the repository variable AWS_VALIDATE_ROLE_ARN is
+    # set to a read-only role trusted via GitHub OIDC (see docs/deployment.md).
+    if: vars.AWS_VALIDATE_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # required to request the OIDC token; no static AWS keys
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_VALIDATE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          role-session-name: gha-validate-${{ github.run_id }}
+
+      - name: Install cfn-lint
+        run: pip install "cfn-lint==1.57.2"
+
+      - name: Run validation including read-only AWS checks
+        run: ./scripts/validate.sh --aws

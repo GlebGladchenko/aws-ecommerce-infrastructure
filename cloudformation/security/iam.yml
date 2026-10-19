@@ -1,0 +1,45 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - least-privilege
+  IAM roles used by the workload at runtime.
+
+Metadata:
+  ImplementationStatus: PLACEHOLDER
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W2001 # TODO: remove once real resources consume the parameters
+
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+    Description: Project prefix for resource names.
+  Environment:
+    Type: String
+    AllowedValues: [dev, prod]
+    Description: Deployment environment.
+  # TODO: EcrRepositoryArn, AppSecretArn, AssetsBucketArn, DbMasterSecretArn
+
+# TODO: Planned resources
+#   AppInstanceRole (+ InstanceProfile)   Path /<project>/<env>/, no RoleName
+#                                          (lets CloudFormation replace it safely)
+#     Managed:  AmazonSSMManagedInstanceCore (Session Manager instead of SSH)
+#     Inline, each scoped to a specific ARN - no "Resource: *" for data access:
+#       ecr:GetAuthorizationToken (account-level by design) + BatchGetImage /
+#           GetDownloadUrlForLayer on EcrRepositoryArn
+#       secretsmanager:GetSecretValue on AppSecretArn and DbMasterSecretArn
+#       kms:Decrypt on the secrets' KMS key via kms:ViaService condition
+#       s3:GetObject / PutObject on AssetsBucketArn/*
+#       logs:CreateLogStream / PutLogEvents on the app log group
+#
+# Out of scope for this template (bootstrap, deployed once per account):
+#   GitHub OIDC identity provider and the deployment role assumed by
+#   .github/workflows/deploy-infrastructure.yml. A stack cannot create the
+#   role that deploys it. See docs/security.md.
+Resources:
+  PlaceholderResource:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+# TODO: Planned outputs
+#   AppInstanceRoleArn, AppInstanceProfileArn

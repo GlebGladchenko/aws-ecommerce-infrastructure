@@ -1,0 +1,54 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - EC2 launch
+  template for application hosts that run the python-ecommerce-app container
+  image pulled from Amazon ECR.
+
+Metadata:
+  ImplementationStatus: PLACEHOLDER
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W2001 # TODO: remove once real resources consume the parameters
+
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+    Description: Project prefix for resource names.
+  Environment:
+    Type: String
+    AllowedValues: [dev, prod]
+    Description: Deployment environment.
+  AppInstanceType:
+    Type: String
+    Description: EC2 instance type.
+  AppContainerPort:
+    Type: Number
+    Description: Port the application container listens on.
+  LogRetentionDays:
+    Type: Number
+    Description: Retention for the application log group.
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: Amazon Linux 2023 AMI, resolved from the public SSM parameter.
+  # TODO: AppSecurityGroupId, InstanceProfileArn, EcrRepositoryUri,
+  #       AppSecretArn, DbMasterSecretArn, DbEndpointAddress, AppImageTag
+
+# TODO: Planned resources
+#   LaunchTemplate     <project>-<env>-app-lt
+#     MetadataOptions  HttpTokens: required (IMDSv2 only), hop limit 2 (containers)
+#     BlockDevices     gp3, Encrypted: true
+#     No KeyName       shell access through SSM Session Manager only
+#     UserData         install Docker + CloudWatch agent, log in to ECR, fetch
+#                      secrets from Secrets Manager at boot (never baked into
+#                      user data), run the container on AppContainerPort
+#     TagSpecifications  instance + volume tags (Name, Component)
+#   AppLogGroup        /<project>/<env>/app, RetentionInDays: LogRetentionDays
+Resources:
+  PlaceholderResource:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+# TODO: Planned outputs
+#   LaunchTemplateId, LaunchTemplateLatestVersion, AppLogGroupName

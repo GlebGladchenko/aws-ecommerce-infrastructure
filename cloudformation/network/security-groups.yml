@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - security
+  groups implementing a tiered, least-privilege traffic model
+  (CloudFront -> ALB -> App -> Database).
+
+Metadata:
+  ImplementationStatus: PLACEHOLDER
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W2001 # TODO: remove once real resources consume the parameters
+
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+    Description: Project prefix for resource names.
+  Environment:
+    Type: String
+    AllowedValues: [dev, prod]
+    Description: Deployment environment.
+  AppContainerPort:
+    Type: Number
+    Description: Port the application container listens on.
+  # TODO: VpcId (Type: AWS::EC2::VPC::Id) from NetworkStack.Outputs.VpcId
+
+# TODO: Planned resources
+#   AlbSecurityGroup   ingress 443 (and 80 for redirect) ONLY from the AWS-managed
+#                      prefix list com.amazonaws.global.cloudfront.origin-facing
+#   AppSecurityGroup   ingress AppContainerPort ONLY from AlbSecurityGroup;
+#                      no SSH - administrative access via SSM Session Manager
+#   DbSecurityGroup    ingress 5432 ONLY from AppSecurityGroup; no egress rules
+#   Ingress/egress rules as separate AWS::EC2::SecurityGroupIngress/Egress
+#   resources to avoid circular references between groups.
+Resources:
+  PlaceholderResource:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+# TODO: Planned outputs
+#   AlbSecurityGroupId, AppSecurityGroupId, DbSecurityGroupId

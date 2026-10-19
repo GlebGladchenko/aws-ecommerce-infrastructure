@@ -1,0 +1,56 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - Amazon RDS
+  for PostgreSQL in isolated private data subnets, Multi-AZ, encrypted, with
+  the master password managed by Secrets Manager.
+
+Metadata:
+  ImplementationStatus: PLACEHOLDER
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W2001 # TODO: remove once real resources consume the parameters
+
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+    Description: Project prefix for resource names.
+  Environment:
+    Type: String
+    AllowedValues: [dev, prod]
+    Description: Deployment environment.
+  DbInstanceClass:
+    Type: String
+    Description: RDS instance class.
+  DbAllocatedStorage:
+    Type: Number
+    Description: Allocated storage in GiB.
+  DbMultiAz:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Description: Enable Multi-AZ.
+  DbBackupRetentionDays:
+    Type: Number
+    Description: Automated backup retention in days.
+  # TODO: DataSubnetIds, DbSecurityGroupId
+
+# TODO: Planned resources
+#   DbSubnetGroup      DataSubnetIds (two AZs, no internet route)
+#   DbParameterGroup   postgres family; rds.force_ssl = 1
+#   KMS key + alias    alias/<project>-<env>-rds, key rotation enabled
+#   DbInstance         <project>-<env>-postgres
+#     Engine postgres, StorageType gp3, StorageEncrypted with the KMS key
+#     ManageMasterUserPassword: true  (RDS creates + rotates the secret;
+#                                      no password ever appears in this repo)
+#     MultiAZ: DbMultiAz, PubliclyAccessible: false
+#     BackupRetentionPeriod, CopyTagsToSnapshot, AutoMinorVersionUpgrade
+#     DeletionProtection: true in prod
+#     EnableCloudwatchLogsExports: [postgresql], Performance Insights
+#     DeletionPolicy / UpdateReplacePolicy: Snapshot
+Resources:
+  PlaceholderResource:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+# TODO: Planned outputs
+#   DbInstanceIdentifier, EndpointAddress, EndpointPort, MasterUserSecretArn

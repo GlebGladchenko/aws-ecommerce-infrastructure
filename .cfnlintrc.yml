@@ -1,0 +1,11 @@
+# cfn-lint configuration - https://github.com/aws-cloudformation/cfn-lint
+# Used by scripts/validate.sh and .github/workflows/validate-infrastructure.yml.
+templates:
+  - cloudformation/**/*.yml
+
+# The project deploys to us-east-1 (required for CloudFront-scoped WAF).
+regions:
+  - us-east-1
+
+# Template-specific suppressions live in each template's
+# Metadata.cfn-lint.config block, next to the reason for them.

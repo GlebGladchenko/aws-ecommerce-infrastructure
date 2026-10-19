@@ -1,0 +1,99 @@
+name: Deploy Infrastructure
+
+# DISABLED BY DEFAULT.
+# - Manual trigger only (no push/schedule triggers).
+# - The `guard` job fails unless the repository variable INFRA_DEPLOY_ENABLED
+#   is set to "true".
+# - scripts/deploy.sh additionally refuses to deploy while any template is
+#   marked ImplementationStatus: PLACEHOLDER.
+# See docs/deployment.md for the one-time OIDC/bootstrap setup.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [dev, prod]
+        default: dev
+        required: true
+      execute_changeset:
+        description: Execute the change set (unchecked = create change set for review only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Never run two deployments against the same environment at once, and never
+# cancel one that is in progress.
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    name: Check deployment is enabled
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Verify INFRA_DEPLOY_ENABLED
+        env:
+          DEPLOY_ENABLED: ${{ vars.INFRA_DEPLOY_ENABLED }}
+        run: |
+          if [ "$DEPLOY_ENABLED" != "true" ]; then
+            echo "::error::Deployments are disabled. Set the repository variable INFRA_DEPLOY_ENABLED=true once the infrastructure is implemented."
+            exit 1
+          fi
+
+  validate:
+    name: Validate
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "cfn-lint==1.57.2"
+      - run: ./scripts/validate.sh
+
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # GitHub Environment: holds per-environment variables and, for prod,
+    # required reviewers (manual approval gate).
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write # OIDC token for AssumeRoleWithWebIdentity
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      EXECUTE_CHANGESET: ${{ inputs.execute_changeset }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      CFN_ARTIFACT_BUCKET: ${{ vars.CFN_ARTIFACT_BUCKET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install "cfn-lint==1.57.2"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-deploy-${{ inputs.environment }}-${{ github.run_id }}
+
+      - name: Deploy root stack
+        run: |
+          args=("$ENVIRONMENT" --yes)
+          if [ "$EXECUTE_CHANGESET" = "true" ]; then
+            args+=(--execute)
+          fi
+          ./scripts/deploy.sh "${args[@]}"

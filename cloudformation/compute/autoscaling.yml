@@ -1,0 +1,47 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - Auto Scaling
+  group spreading application instances across the private app subnets of
+  two Availability Zones.
+
+Metadata:
+  ImplementationStatus: PLACEHOLDER
+  cfn-lint:
+    config:
+      ignore_checks:
+        - W2001 # TODO: remove once real resources consume the parameters
+
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+    Description: Project prefix for resource names.
+  Environment:
+    Type: String
+    AllowedValues: [dev, prod]
+    Description: Deployment environment.
+  AsgMinSize:
+    Type: Number
+    Description: Minimum instances.
+  AsgMaxSize:
+    Type: Number
+    Description: Maximum instances.
+  AsgDesiredCapacity:
+    Type: Number
+    Description: Initial desired instances.
+  # TODO: AppSubnetIds, LaunchTemplateId, LaunchTemplateVersion, TargetGroupArn
+
+# TODO: Planned resources
+#   AutoScalingGroup   <project>-<env>-app-asg in AppSubnetIds (2 AZs)
+#                      HealthCheckType: ELB, grace period ~300s
+#                      TargetGroupARNs: [TargetGroupArn]
+#                      UpdatePolicy AutoScalingRollingUpdate (MinInstancesInService >= 1)
+#                      CreationPolicy / cfn-signal so a broken image fails the deploy
+#   ScalingPolicy      target tracking on ASGAverageCPUUtilization (~50%);
+#                      consider ALBRequestCountPerTarget later
+Resources:
+  PlaceholderResource:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+# TODO: Planned outputs
+#   AutoScalingGroupName

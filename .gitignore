@@ -1,0 +1,49 @@
+# --- Credentials & secrets (never commit) -----------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+id_rsa*
+.aws/
+credentials
+aws-exports.*
+*secret*.json
+*secrets*.json
+*.tfvars
+
+# --- Build / packaging output ------------------------------------------------
+.build/
+*.packaged.yml
+packaged*.yml
+.aws-sam/
+cdk.out/
+
+# --- Python ------------------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Editors & OS ------------------------------------------------------------
+.idea/workspace.xml
+.idea/usage.statistics.xml
+.idea/shelf/
+.idea/dataSources*
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Logs --------------------------------------------------------------------
+*.log
+
+# PyCharm / IntelliJ IDEA
+.idea/
+*.iml
