@@ -127,6 +127,7 @@ The contract between them:
 
 - [x] Repository scaffolding, conventions, CI validation
 - [ ] Network: VPC, subnets, IGW, NAT, route tables, flow logs
+      (template implemented in `network/vpc.yml`; test deployment pending)
 - [ ] Security groups
 - [ ] S3, ECR, Secrets Manager, IAM
 - [ ] RDS PostgreSQL Multi-AZ

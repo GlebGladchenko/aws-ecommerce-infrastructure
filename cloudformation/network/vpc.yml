@@ -1,16 +1,24 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - network:
-  VPC across two Availability Zones with public, private application and
-  private data subnets, Internet Gateway and NAT Gateway(s).
+  AWS E-Commerce Infrastructure - network: VPC across two Availability Zones
+  with public, private application and private data subnets, Internet Gateway,
+  NAT Gateway(s), S3 gateway endpoint and VPC Flow Logs.
+
+# -----------------------------------------------------------------------------
+# Subnet layout for a /16 VPC (e.g. 10.10.0.0/16), all subnets /24:
+#
+#   Tier     AZ a            AZ b            Default route
+#   public   10.10.0.0/24    10.10.1.0/24    Internet Gateway
+#   app      10.10.10.0/24   10.10.11.0/24   NAT Gateway (same AZ in per-az mode)
+#   data     10.10.20.0/24   10.10.21.0/24   none (VPC-local only)
+#
+# Blocks are picked from !Cidr [VpcCidr, 256, 8] by index, which leaves gaps
+# for adding subnets to a tier later without renumbering.
+# -----------------------------------------------------------------------------
 
 Metadata:
   # Checked by scripts/deploy.sh. Set to IMPLEMENTED when this template is complete.
-  ImplementationStatus: PLACEHOLDER
-  cfn-lint:
-    config:
-      ignore_checks:
-        - W2001 # TODO: remove once real resources consume the parameters
+  ImplementationStatus: IMPLEMENTED
 
 Parameters:
   ProjectName:
@@ -23,29 +31,367 @@ Parameters:
     Description: Deployment environment.
   VpcCidr:
     Type: String
-    Description: VPC CIDR block (e.g. 10.10.0.0/16).
+    AllowedPattern: "^(\\d{1,3}\\.){3}\\d{1,3}/16$"
+    ConstraintDescription: Must be an IPv4 /16 CIDR block, e.g. 10.10.0.0/16.
+    Description: VPC CIDR block. Must be a /16; subnets are carved as /24s.
   NatGatewayMode:
     Type: String
-    AllowedValues: [single, per-az]
-    Description: One shared NAT Gateway, or one per AZ for high availability.
+    Default: none
+    AllowedValues: [none, single, per-az]
+    Description: NAT configuration for private application subnets.
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [7, 14, 30, 60, 90, 180, 365]
+    Description: Retention for the VPC Flow Logs log group.
+  AvailabilityZoneA:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-2a
 
-# TODO: Planned resources
-#   VPC                  <project>-<env>-vpc, DNS support + hostnames enabled
-#   Subnets (x6)         derived with !Cidr; AZs selected with !Select [n, !GetAZs ""]
-#     public-a/b         ALB + NAT Gateways; MapPublicIpOnLaunch: false
-#     app-a/b            EC2 Auto Scaling group; default route -> NAT Gateway
-#     data-a/b           RDS only; no route to the internet at all
-#   InternetGateway + VPCGatewayAttachment
-#   NAT Gateway(s) + EIP(s)  Condition on NatGatewayMode (single | per-az)
-#   Route tables         public (0.0.0.0/0 -> IGW), app per AZ (-> NAT), data (local only)
-#   S3 Gateway endpoint  keeps S3/ECR layer traffic off the NAT Gateway (cost + security)
-#   VPC Flow Logs        to CloudWatch Logs, with a scoped IAM role
-#   Name tags            <project>-<env>-<tier>-<az-suffix>
+  AvailabilityZoneB:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-2b
+
+Conditions:
+  NatEnabled: !Not
+    - !Equals [!Ref NatGatewayMode, none]
+
+  NatPerAz: !Equals [!Ref NatGatewayMode, per-az]
+
 Resources:
-  # TODO: replace with the resources above. This no-op handle only keeps the
-  # template syntactically valid; it is never meant to be deployed.
-  PlaceholderResource:
-    Type: AWS::CloudFormation::WaitConditionHandle
+  # --- VPC and Internet Gateway ---------------------------------------------
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true # required for interface endpoints and RDS DNS names
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-vpc
 
-# TODO: Planned outputs (consumed by main.yml via !GetAtt NetworkStack.Outputs.<Name>)
-#   VpcId, VpcCidr, PublicSubnetIds, AppSubnetIds, DataSubnetIds  (subnet lists comma-joined)
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-igw
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # --- Subnets -------------------------------------------------------------
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Ref AvailabilityZoneA
+      CidrBlock: !Select [0, !Cidr [!Ref VpcCidr, 256, 8]]
+      MapPublicIpOnLaunch: false # only the ALB and NAT Gateways get public IPs
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-public-a
+        - Key: Tier
+          Value: public
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Ref AvailabilityZoneB
+      CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 256, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-public-b
+        - Key: Tier
+          Value: public
+
+  AppSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Ref AvailabilityZoneA
+      CidrBlock: !Select [10, !Cidr [!Ref VpcCidr, 256, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-app-a
+        - Key: Tier
+          Value: app
+
+  AppSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Ref AvailabilityZoneB
+      CidrBlock: !Select [11, !Cidr [!Ref VpcCidr, 256, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-app-b
+        - Key: Tier
+          Value: app
+
+  DataSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Ref AvailabilityZoneA
+      CidrBlock: !Select [20, !Cidr [!Ref VpcCidr, 256, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-data-a
+        - Key: Tier
+          Value: data
+
+  DataSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Ref AvailabilityZoneB
+      CidrBlock: !Select [21, !Cidr [!Ref VpcCidr, 256, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-data-b
+        - Key: Tier
+          Value: data
+
+  # --- Public routing ------------------------------------------------------
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-public-rt
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  # --- NAT Gateways --------------------------------------------------------
+  # single : one NAT Gateway in AZ a serves both app subnets (cheaper; app
+  #          egress in AZ b fails if AZ a fails).
+  # per-az : each AZ has its own NAT Gateway (no cross-AZ dependency).
+  NatEipA:
+    Type: AWS::EC2::EIP
+    Condition: NatEnabled
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-nat-eip-a
+
+  NatGatewayA:
+    Type: AWS::EC2::NatGateway
+    Condition: NatEnabled
+    Properties:
+      AllocationId: !GetAtt NatEipA.AllocationId
+      SubnetId: !Ref PublicSubnetA
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-nat-a
+
+  NatEipB:
+    Type: AWS::EC2::EIP
+    Condition: NatPerAz
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-nat-eip-b
+
+  NatGatewayB:
+    Type: AWS::EC2::NatGateway
+    Condition: NatPerAz
+    Properties:
+      AllocationId: !GetAtt NatEipB.AllocationId
+      SubnetId: !Ref PublicSubnetB
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-nat-b
+
+  # --- App routing (egress via NAT) -----------------------------------------
+  AppRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-app-rt-a
+
+  AppDefaultRouteA:
+    Type: AWS::EC2::Route
+    Condition: NatEnabled
+    Properties:
+      RouteTableId: !Ref AppRouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayA
+
+  AppSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AppSubnetA
+      RouteTableId: !Ref AppRouteTableA
+
+  AppRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-app-rt-b
+
+  AppDefaultRouteB:
+    Type: AWS::EC2::Route
+    Condition: NatEnabled
+    Properties:
+      RouteTableId: !Ref AppRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !If [NatPerAz, !Ref NatGatewayB, !Ref NatGatewayA]
+
+  AppSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AppSubnetB
+      RouteTableId: !Ref AppRouteTableB
+
+  # --- Data routing (isolated) ----------------------------------------------
+  # Only the implicit local route: the database tier cannot reach, or be
+  # reached from, the internet.
+  DataRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-data-rt
+
+  DataSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DataSubnetA
+      RouteTableId: !Ref DataRouteTable
+
+  DataSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DataSubnetB
+      RouteTableId: !Ref DataRouteTable
+
+  # --- VPC endpoints --------------------------------------------------------
+  # Free gateway endpoint: S3 traffic from the app tier (including ECR image
+  # layers, which are stored in S3) bypasses the NAT Gateway, cutting NAT data
+  # processing charges and keeping that traffic on the AWS network.
+  # TODO: restrict PolicyDocument to the project's buckets and the ECR layer
+  # bucket (prod-<region>-starport-layer-bucket) once storage/s3.yml exists.
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      VpcEndpointType: Gateway
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      RouteTableIds:
+        - !Ref AppRouteTableA
+        - !Ref AppRouteTableB
+
+  # --- VPC Flow Logs --------------------------------------------------------
+  # The delivery role lives here rather than in security/iam.yml because it is
+  # a service role owned by this component, not a workload role.
+  FlowLogsLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub /${ProjectName}/${Environment}/vpc-flow-logs
+      RetentionInDays: !Ref LogRetentionDays
+
+  FlowLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: !Sub /${ProjectName}/${Environment}/
+      Description: Allows VPC Flow Logs to deliver to its CloudWatch Logs log group.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              # Confused-deputy protection: only flow logs in this account.
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:vpc-flow-log/*
+      Policies:
+        - PolicyName: deliver-flow-logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: !GetAtt FlowLogsLogGroup.Arn
+
+  VpcFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      ResourceType: VPC
+      ResourceId: !Ref Vpc
+      TrafficType: ALL
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Ref FlowLogsLogGroup
+      DeliverLogsPermissionArn: !GetAtt FlowLogsRole.Arn
+      MaxAggregationInterval: 600 # 10 min: fewer log events, lower cost
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-vpc-flow-log
+
+# Consumed by main.yml via !GetAtt NetworkStack.Outputs.<Name>. Subnet lists are
+# comma-joined so they can be passed to List<AWS::EC2::Subnet::Id> parameters.
+Outputs:
+  VpcId:
+    Description: VPC ID.
+    Value: !Ref Vpc
+  VpcCidr:
+    Description: VPC CIDR block.
+    Value: !GetAtt Vpc.CidrBlock
+  PublicSubnetIds:
+    Description: Public subnet IDs (AZ a, AZ b) for the ALB.
+    Value: !Join [",", [!Ref PublicSubnetA, !Ref PublicSubnetB]]
+  AppSubnetIds:
+    Description: Private application subnet IDs (AZ a, AZ b) for the Auto Scaling group.
+    Value: !Join [",", [!Ref AppSubnetA, !Ref AppSubnetB]]
+  DataSubnetIds:
+    Description: Isolated data subnet IDs (AZ a, AZ b) for RDS.
+    Value: !Join [",", [!Ref DataSubnetA, !Ref DataSubnetB]]
+  AvailabilityZones:
+    Description: The two Availability Zones used by this VPC.
+    Value: !Join [",", [!GetAtt PublicSubnetA.AvailabilityZone, !GetAtt PublicSubnetB.AvailabilityZone]]
