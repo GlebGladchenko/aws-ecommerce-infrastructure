@@ -15,7 +15,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-AWS_REGION="${AWS_REGION:-us-east-1}"
+AWS_REGION="${AWS_REGION:-us-east-2}"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 usage() { sed -n '3,14p' "$0"; exit "${1:-0}"; }

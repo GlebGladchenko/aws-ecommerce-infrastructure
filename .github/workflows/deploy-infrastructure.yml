@@ -72,7 +72,7 @@ jobs:
     env:
       ENVIRONMENT: ${{ inputs.environment }}
       EXECUTE_CHANGESET: ${{ inputs.execute_changeset }}
-      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
       CFN_ARTIFACT_BUCKET: ${{ vars.CFN_ARTIFACT_BUCKET }}
     steps:
       - uses: actions/checkout@v4

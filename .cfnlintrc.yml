@@ -3,8 +3,10 @@
 templates:
   - cloudformation/**/*.yml
 
-# The project deploys to us-east-1 (required for CloudFront-scoped WAF).
+# The project deploys to us-east-2. The CloudFront-scoped WAF web ACL must live
+# in us-east-1 (see cloudformation/networking/waf.yml), so lint for both.
 regions:
+  - us-east-2
   - us-east-1
 
 # Template-specific suppressions live in each template's

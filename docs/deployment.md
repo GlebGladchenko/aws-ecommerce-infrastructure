@@ -70,7 +70,7 @@ snapshot) survive and must be removed manually if no longer needed.
    |-------------------------|-------------|---------|
    | `AWS_DEPLOY_ROLE_ARN`   | environment | `arn:aws:iam::123456789012:role/gha-deploy-dev` |
    | `CFN_ARTIFACT_BUCKET`   | environment | `ecommerce-cfn-artifacts-123456789012` |
-   | `AWS_REGION`            | repository  | `us-east-1` |
+   | `AWS_REGION`            | repository  | `us-east-2` |
    | `AWS_VALIDATE_ROLE_ARN` | repository  | optional; enables the API validation job |
    | `INFRA_DEPLOY_ENABLED`  | repository  | `true` - **only** once templates are implemented |
 

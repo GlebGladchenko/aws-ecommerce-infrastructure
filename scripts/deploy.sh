@@ -13,7 +13,7 @@
 # Required environment variables:
 #   CFN_ARTIFACT_BUCKET   existing S3 bucket for packaged nested templates
 # Optional:
-#   AWS_REGION            defaults to us-east-1
+#   AWS_REGION            defaults to us-east-2
 #
 # Safety: refuses to run while any template is marked
 # `ImplementationStatus: PLACEHOLDER`.
@@ -23,7 +23,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CFN_DIR="$REPO_ROOT/cloudformation"
 BUILD_DIR="$REPO_ROOT/.build"
-AWS_REGION="${AWS_REGION:-us-east-1}"
+AWS_REGION="${AWS_REGION:-us-east-2}"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 usage() { sed -n '3,20p' "$0"; exit "${1:-0}"; }

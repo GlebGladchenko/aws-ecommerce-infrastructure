@@ -4,6 +4,8 @@
     "Environment": "dev",
     "VpcCidr": "10.10.0.0/16",
     "NatGatewayMode": "single",
+    "AvailabilityZoneA": "us-east-2a",
+    "AvailabilityZoneB": "us-east-2b",
     "AppInstanceType": "t3.micro",
     "AppContainerPort": "8000",
     "AppHealthCheckPath": "/health",

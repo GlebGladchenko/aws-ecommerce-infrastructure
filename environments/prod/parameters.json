@@ -4,6 +4,8 @@
     "Environment": "prod",
     "VpcCidr": "10.20.0.0/16",
     "NatGatewayMode": "per-az",
+    "AvailabilityZoneA": "us-east-2a",
+    "AvailabilityZoneB": "us-east-2b",
     "AppInstanceType": "t3.small",
     "AppContainerPort": "8000",
     "AppHealthCheckPath": "/health",

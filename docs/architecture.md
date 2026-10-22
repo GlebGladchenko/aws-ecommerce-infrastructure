@@ -106,8 +106,9 @@ by `scripts/deploy.sh` and propagate to all nested stacks and taggable resources
 **Cross-stack references** - nested stack outputs only; no CloudFormation
 Exports, so `dev` and `prod` cannot become coupled.
 
-**Region** - `us-east-1`, because a WAF web ACL attached to CloudFront must be
-created there.
+**Region** - `us-east-2`. A WAF web ACL attached to CloudFront must be created in
+`us-east-1`, so the WAF template is deployed as a separate `us-east-1` stack
+rather than nested under the root stack.
 
 ## Well-Architected mapping
 

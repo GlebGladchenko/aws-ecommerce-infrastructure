@@ -11,7 +11,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CFN_DIR="$REPO_ROOT/cloudformation"
 ENV_DIR="$REPO_ROOT/environments"
-AWS_REGION="${AWS_REGION:-us-east-1}"
+AWS_REGION="${AWS_REGION:-us-east-2}"
 
 RUN_AWS_CHECKS=false
 case "${1:-}" in

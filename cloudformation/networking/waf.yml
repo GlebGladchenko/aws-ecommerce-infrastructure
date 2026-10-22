@@ -29,8 +29,9 @@ Parameters:
     Description: Max requests per source IP per 5-minute window before blocking.
 
 # IMPORTANT: a web ACL with Scope CLOUDFRONT must be created in us-east-1.
-# This project deploys the root stack to us-east-1 for that reason. Deploying
-# elsewhere requires a separate us-east-1 stack for this template.
+# The root stack deploys to us-east-2, so this template needs its own us-east-1
+# stack; the WafStack nested stack in main.yml must be replaced by that before
+# this template is implemented.
 #
 # TODO: Planned resources
 #   WebACL  <project>-<env>-web-acl, Scope: CLOUDFRONT, DefaultAction: Allow
