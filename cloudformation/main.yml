@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - root stack.
+  [PARTIAL - network stage only] AWS E-Commerce Infrastructure - root stack.
   Orchestrates the nested stacks that host the python-ecommerce-app FastAPI
   application. Deploy only via scripts/deploy.sh, which packages the nested
-  templates to S3 and refuses to run while any template is a placeholder.
+  templates to S3 and refuses to deploy a stage that includes a placeholder.
 
 # -----------------------------------------------------------------------------
 # Conventions (see docs/architecture.md)
@@ -16,11 +16,21 @@ Description: >-
 #   Cross-stack    : values flow between nested stacks via !GetAtt
 #                    <Stack>.Outputs.<Name>; no global Exports are used, so
 #                    environments cannot accidentally couple to each other.
+#   Stages         : DeploymentStage=network creates only NetworkStack and
+#                    SecurityGroupsStack; full also creates every stack marked
+#                    `Condition: IsFullDeployment`. Keep this in sync with
+#                    NETWORK_STAGE_TEMPLATES in scripts/deploy.sh.
+#   WAF            : a CloudFront-scoped web ACL can only be created in
+#                    us-east-1, so networking/waf.yml is not nested here.
+#                    scripts/deploy.sh deploys it as <stack>-waf in us-east-1
+#                    (full stage only) and passes its ARN in as WebAclArn.
 # -----------------------------------------------------------------------------
 
 Metadata:
-  # Checked by scripts/deploy.sh. Change to IMPLEMENTED once every nested stack
-  # is implemented and the TODO wiring below is enabled.
+  # Describes the full stage. scripts/deploy.sh checks it only for
+  # DeploymentStage=full; the network stage checks just the templates it
+  # creates. Change to IMPLEMENTED once every nested stack is implemented and
+  # the TODO wiring below is enabled.
   ImplementationStatus: PLACEHOLDER
   cfn-lint:
     config:
@@ -31,6 +41,7 @@ Metadata:
       - Label:
           default: General
         Parameters:
+          - DeploymentStage
           - ProjectName
           - Environment
       - Label:
@@ -38,6 +49,8 @@ Metadata:
         Parameters:
           - VpcCidr
           - NatGatewayMode
+          - AvailabilityZoneA
+          - AvailabilityZoneB
       - Label:
           default: Application compute
         Parameters:
@@ -60,8 +73,22 @@ Metadata:
         Parameters:
           - AlarmEmail
           - LogRetentionDays
+      - Label:
+          default: Edge
+        Parameters:
+          - WebAclArn
 
 Parameters:
+  DeploymentStage:
+    Type: String
+    Default: full
+    AllowedValues:
+      - network
+      - full
+    Description: >-
+      'network' = VPC and security groups only; 'full' = every stack.
+      Set by scripts/deploy.sh --stage.
+
   ProjectName:
     Type: String
     Default: ecommerce
@@ -78,19 +105,31 @@ Parameters:
 
   VpcCidr:
     Type: String
-    AllowedPattern: "^(\\d{1,3}\\.){3}\\d{1,3}/(1[6-9]|2[0-4])$"
-    ConstraintDescription: Must be an IPv4 CIDR between /16 and /24.
-    Description: VPC CIDR block. Use non-overlapping ranges per environment.
+    AllowedPattern: "^(\\d{1,3}\\.){3}\\d{1,3}/16$"
+    ConstraintDescription: Must be an IPv4 /16 CIDR block, e.g. 10.10.0.0/16.
+    Description: VPC CIDR block (/16). Use non-overlapping ranges per environment.
 
   NatGatewayMode:
     Type: String
     Default: per-az
     AllowedValues:
+      - none
       - single
       - per-az
     Description: >-
+      'none' = no NAT Gateways (lowest cost, no NAT-based internet access);
       'single' = one NAT Gateway (lower cost, AZ-level single point of failure);
       'per-az' = one NAT Gateway per AZ (high availability).
+
+  # Set explicitly rather than derived with !GetAZs, which returns only AZs
+  # that have a default subnet and so may return fewer than two.
+  AvailabilityZoneA:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: First Availability Zone; must be in the deployment region.
+
+  AvailabilityZoneB:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: Second Availability Zone; must differ from AvailabilityZoneA.
 
   AppInstanceType:
     Type: String
@@ -180,6 +219,30 @@ Parameters:
     AllowedValues: [7, 14, 30, 60, 90, 180, 365]
     Description: CloudWatch Logs retention period in days.
 
+  WebAclArn:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^arn:aws:wafv2:us-east-1:\\d{12}:global/webacl/.+$"
+    ConstraintDescription: Must be a CloudFront-scoped (global, us-east-1) WAFv2 web ACL ARN.
+    Description: >-
+      WebAclArn output of the <stack>-waf stack in us-east-1. Passed by
+      scripts/deploy.sh; required for the full stage.
+
+Rules:
+  FullStageRequiresWebAcl:
+    RuleCondition: !Equals [!Ref DeploymentStage, full]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref WebAclArn, ""]]
+        AssertDescription: >-
+          DeploymentStage=full needs WebAclArn from the us-east-1 WAF stack
+          (scripts/deploy.sh deploys it and passes the ARN).
+
+Conditions:
+  # The ALB serves HTTPS only once a certificate is supplied.
+  HasAlbCertificate: !Not [!Equals [!Ref AlbCertificateArn, ""]]
+  # Every stack except NetworkStack and SecurityGroupsStack.
+  IsFullDeployment: !Equals [!Ref DeploymentStage, full]
+
 # Nested stacks are grouped by layer. Until the child templates
 # expose real Outputs, ordering is expressed with DependsOn. When a child is
 # implemented, uncomment its TODO parameters (which use !GetAtt and make the
@@ -196,27 +259,31 @@ Resources:
         Environment: !Ref Environment
         VpcCidr: !Ref VpcCidr
         NatGatewayMode: !Ref NatGatewayMode
+        AvailabilityZoneA: !Ref AvailabilityZoneA
+        AvailabilityZoneB: !Ref AvailabilityZoneB
+        LogRetentionDays: !Ref LogRetentionDays
       Tags:
         - Key: Component
           Value: network
 
   SecurityGroupsStack:
     Type: AWS::CloudFormation::Stack
-    DependsOn: NetworkStack
     Properties:
       TemplateURL: ./network/security-groups.yml
       TimeoutInMinutes: 15
       Parameters:
         ProjectName: !Ref ProjectName
         Environment: !Ref Environment
+        VpcId: !GetAtt NetworkStack.Outputs.VpcId
         AppContainerPort: !Ref AppContainerPort
-        # TODO: VpcId: !GetAtt NetworkStack.Outputs.VpcId
+        AlbIngressPort: !If [HasAlbCertificate, 443, 80]
       Tags:
         - Key: Component
           Value: security-groups
 
   AlertingStack:
     Type: AWS::CloudFormation::Stack
+    Condition: IsFullDeployment
     Properties:
       TemplateURL: ./monitoring/sns.yml
       TimeoutInMinutes: 15
@@ -231,6 +298,7 @@ Resources:
   # --- Security & storage -----------------------------------------------------
   SecretsStack:
     Type: AWS::CloudFormation::Stack
+    Condition: IsFullDeployment
     Properties:
       TemplateURL: ./security/secrets.yml
       TimeoutInMinutes: 15
@@ -243,6 +311,7 @@ Resources:
 
   StorageStack:
     Type: AWS::CloudFormation::Stack
+    Condition: IsFullDeployment
     Properties:
       TemplateURL: ./storage/s3.yml
       TimeoutInMinutes: 15
@@ -255,6 +324,7 @@ Resources:
 
   ContainerRegistryStack:
     Type: AWS::CloudFormation::Stack
+    Condition: IsFullDeployment
     Properties:
       TemplateURL: ./storage/ecr.yml
       TimeoutInMinutes: 15
@@ -267,6 +337,7 @@ Resources:
 
   IamStack:
     Type: AWS::CloudFormation::Stack
+    Condition: IsFullDeployment
     DependsOn:
       - SecretsStack
       - StorageStack
@@ -289,6 +360,7 @@ Resources:
   # --- Data -------------------------------------------------------------------
   DatabaseStack:
     Type: AWS::CloudFormation::Stack
+    Condition: IsFullDeployment
     DependsOn:
       - NetworkStack
       - SecurityGroupsStack
@@ -311,6 +383,7 @@ Resources:
   # --- Compute ----------------------------------------------------------------
   LoadBalancerStack:
     Type: AWS::CloudFormation::Stack
+    Condition: IsFullDeployment
     DependsOn:
       - NetworkStack
       - SecurityGroupsStack
@@ -334,6 +407,7 @@ Resources:
 
   LaunchTemplateStack:
     Type: AWS::CloudFormation::Stack
+    Condition: IsFullDeployment
     DependsOn:
       - SecurityGroupsStack
       - IamStack
@@ -360,6 +434,7 @@ Resources:
 
   AutoScalingStack:
     Type: AWS::CloudFormation::Stack
+    Condition: IsFullDeployment
     DependsOn:
       - NetworkStack
       - LoadBalancerStack
@@ -382,25 +457,12 @@ Resources:
           Value: autoscaling
 
   # --- Edge -------------------------------------------------------------------
-  WafStack:
-    Type: AWS::CloudFormation::Stack
-    Properties:
-      TemplateURL: ./networking/waf.yml
-      TimeoutInMinutes: 15
-      Parameters:
-        ProjectName: !Ref ProjectName
-        Environment: !Ref Environment
-        LogRetentionDays: !Ref LogRetentionDays
-      Tags:
-        - Key: Component
-          Value: waf
-
   CdnStack:
     Type: AWS::CloudFormation::Stack
+    Condition: IsFullDeployment
     DependsOn:
       - LoadBalancerStack
       - StorageStack
-      - WafStack
     Properties:
       TemplateURL: ./networking/cloudfront.yml
       TimeoutInMinutes: 45
@@ -411,7 +473,7 @@ Resources:
         # TODO: AssetsBucketName:       !GetAtt StorageStack.Outputs.AssetsBucketName
         # TODO: AssetsBucketRegionalDomainName: !GetAtt StorageStack.Outputs.AssetsBucketRegionalDomainName
         # TODO: LogsBucketName:         !GetAtt StorageStack.Outputs.LogsBucketName
-        # TODO: WebAclArn:              !GetAtt WafStack.Outputs.WebAclArn
+        # TODO: WebAclArn:              !Ref WebAclArn
       Tags:
         - Key: Component
           Value: cdn
@@ -419,6 +481,7 @@ Resources:
   # --- Observability ----------------------------------------------------------
   MonitoringStack:
     Type: AWS::CloudFormation::Stack
+    Condition: IsFullDeployment
     DependsOn:
       - AlertingStack
       - LoadBalancerStack
@@ -448,3 +511,9 @@ Outputs:
   StackEnvironment:
     Description: Environment this root stack was deployed for.
     Value: !Ref Environment
+  DeploymentStage:
+    Description: Stage this root stack was deployed with (network or full).
+    Value: !Ref DeploymentStage
+  VpcId:
+    Description: VPC ID from the network stack.
+    Value: !GetAtt NetworkStack.Outputs.VpcId
