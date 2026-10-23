@@ -1,15 +1,32 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - security
-  groups implementing a tiered, least-privilege traffic model
-  (CloudFront -> ALB -> App -> Database).
+  AWS E-Commerce Infrastructure - security groups implementing a tiered,
+  least-privilege traffic model (CloudFront -> ALB -> App -> Database).
+
+# -----------------------------------------------------------------------------
+# Traffic model
+#
+#   From                        To     Port               Rule lives on
+#   CloudFront origin-facing    ALB    AlbIngressPort     AlbSecurityGroup
+#   ALB                         App    AppContainerPort   AlbSecurityGroup (egress)
+#                                                         AppIngressFromAlb (ingress)
+#   App                         DB     5432               AppEgressToDb (egress)
+#                                                         DbSecurityGroup (ingress)
+#   App                         AWS APIs / internet  443  AppSecurityGroup (egress)
+#
+# Rules are inline unless both groups would reference each other inline, which
+# CloudFormation rejects as a circular dependency; those two rules
+# (AppIngressFromAlb, AppEgressToDb) are standalone resources.
+#
+# No SSH: instances have no port 22 rule; administrators use SSM Session
+# Manager, which reaches the instance over its outbound 443 connection.
+# DNS (VPC resolver) and NTP (169.254.169.123) are not filtered by security
+# groups, so they need no rules.
+# -----------------------------------------------------------------------------
 
 Metadata:
-  ImplementationStatus: PLACEHOLDER
-  cfn-lint:
-    config:
-      ignore_checks:
-        - W2001 # TODO: remove once real resources consume the parameters
+  # Checked by scripts/deploy.sh. Set to IMPLEMENTED when this template is complete.
+  ImplementationStatus: IMPLEMENTED
 
 Parameters:
   ProjectName:
@@ -20,22 +37,131 @@ Parameters:
     Type: String
     AllowedValues: [dev, prod]
     Description: Deployment environment.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC the security groups belong to (NetworkStack.Outputs.VpcId).
   AppContainerPort:
     Type: Number
+    MinValue: 1024
+    MaxValue: 65535
     Description: Port the application container listens on.
-  # TODO: VpcId (Type: AWS::EC2::VPC::Id) from NetworkStack.Outputs.VpcId
+  AlbIngressPort:
+    Type: Number
+    Default: 443
+    AllowedValues: [80, 443]
+    Description: >-
+      ALB listener port CloudFront connects to: 443 once an ACM certificate is
+      attached to the ALB, 80 until then.
 
-# TODO: Planned resources
-#   AlbSecurityGroup   ingress 443 (and 80 for redirect) ONLY from the AWS-managed
-#                      prefix list com.amazonaws.global.cloudfront.origin-facing
-#   AppSecurityGroup   ingress AppContainerPort ONLY from AlbSecurityGroup;
-#                      no SSH - administrative access via SSM Session Manager
-#   DbSecurityGroup    ingress 5432 ONLY from AppSecurityGroup; no egress rules
-#   Ingress/egress rules as separate AWS::EC2::SecurityGroupIngress/Egress
-#   resources to avoid circular references between groups.
+# AWS-managed prefix list com.amazonaws.global.cloudfront.origin-facing. Its ID
+# differs per region and CloudFormation cannot look it up by name, so add a row
+# before deploying to another region:
+#   aws ec2 describe-managed-prefix-lists --region <region> \
+#     --filters Name=prefix-list-name,Values=com.amazonaws.global.cloudfront.origin-facing
+Mappings:
+  CloudFrontOriginFacingPrefixList:
+    us-east-1:
+      Id: pl-3b927c52
+    us-east-2:
+      Id: pl-b6a144df
+
 Resources:
-  PlaceholderResource:
-    Type: AWS::CloudFormation::WaitConditionHandle
+  # --- Load balancer tier ---------------------------------------------------
+  # Only one rule references the CloudFront prefix list: it counts as ~55 rules
+  # against the default quota of 60 inbound rules per group, so a second rule
+  # (e.g. 80 alongside 443) would fail to create. HTTP->HTTPS redirects are
+  # done by CloudFront, not the ALB.
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${ProjectName}-${Environment} ALB - ingress from CloudFront only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - Description: CloudFront origin-facing servers
+          IpProtocol: tcp
+          FromPort: !Ref AlbIngressPort
+          ToPort: !Ref AlbIngressPort
+          SourcePrefixListId: !FindInMap [CloudFrontOriginFacingPrefixList, !Ref AWS::Region, Id]
+      SecurityGroupEgress:
+        - Description: Forward requests and health checks to app instances
+          IpProtocol: tcp
+          FromPort: !Ref AppContainerPort
+          ToPort: !Ref AppContainerPort
+          DestinationSecurityGroupId: !Ref AppSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-alb-sg
 
-# TODO: Planned outputs
-#   AlbSecurityGroupId, AppSecurityGroupId, DbSecurityGroupId
+  # --- Application tier -----------------------------------------------------
+  # Outbound 443 to anywhere covers ECR, S3 (gateway endpoint), Secrets
+  # Manager, SSM and CloudWatch, all reached through the NAT Gateway. Narrow it
+  # to interface endpoint / prefix list targets if those are added later.
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${ProjectName}-${Environment} app instances - ingress from ALB only
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - Description: HTTPS to AWS APIs and package repositories
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-app-sg
+
+  AppIngressFromAlb:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Requests and health checks from the ALB
+      GroupId: !Ref AppSecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref AppContainerPort
+      ToPort: !Ref AppContainerPort
+      SourceSecurityGroupId: !Ref AlbSecurityGroup
+
+  AppEgressToDb:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      Description: PostgreSQL to the database
+      GroupId: !Ref AppSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref DbSecurityGroup
+
+  # --- Data tier ------------------------------------------------------------
+  # RDS never initiates connections, and replies to inbound connections are
+  # allowed statefully. A group with no SecurityGroupEgress gets an implicit
+  # allow-all rule, so a rule to 127.0.0.1/32 (matches nothing) replaces it.
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${ProjectName}-${Environment} database - ingress from app only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - Description: PostgreSQL from app instances
+          IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+      SecurityGroupEgress:
+        - Description: No egress (replaces the default allow-all rule)
+          IpProtocol: "-1"
+          CidrIp: 127.0.0.1/32
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-db-sg
+
+# Consumed by main.yml via !GetAtt SecurityGroupsStack.Outputs.<Name>.
+Outputs:
+  AlbSecurityGroupId:
+    Description: Security group for the Application Load Balancer.
+    Value: !Ref AlbSecurityGroup
+  AppSecurityGroupId:
+    Description: Security group for the application EC2 instances.
+    Value: !Ref AppSecurityGroup
+  DbSecurityGroupId:
+    Description: Security group for the RDS PostgreSQL instance.
+    Value: !Ref DbSecurityGroup
