@@ -1,8 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   [PARTIAL - network stage only] AWS E-Commerce Infrastructure - root stack.
-  Orchestrates the nested stacks that host the python-ecommerce-app FastAPI
-  application. Deploy only via scripts/deploy.sh, which packages the nested
+  Orchestrates the nested stacks that host the FastAPI application in app/. Deploy only via scripts/deploy.sh, which packages the nested
   templates to S3 and refuses to deploy a stage that includes a placeholder.
 
 # -----------------------------------------------------------------------------
@@ -142,10 +141,13 @@ Parameters:
 
   AppContainerPort:
     Type: Number
-    Default: 8000
+    Default: 8080
     MinValue: 1024
     MaxValue: 65535
-    Description: Port the FastAPI container listens on (non-privileged).
+    Description: >-
+      Port the FastAPI container listens on (non-privileged); app/Dockerfile
+      defaults to 8080. Used by the security groups and the ALB target group,
+      independently of the ALB listener port.
 
   AppHealthCheckPath:
     Type: String

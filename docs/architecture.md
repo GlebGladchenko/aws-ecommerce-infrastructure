@@ -5,9 +5,8 @@
 
 ## Overview
 
-A classic three-tier, two-AZ web architecture for the
-[python-ecommerce-app](https://github.com/) FastAPI service
-(TODO: replace with the real repository URL).
+A classic three-tier, two-AZ web architecture for the FastAPI service in
+[`app/`](../app/).
 
 ```mermaid
 flowchart TB

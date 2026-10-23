@@ -54,6 +54,7 @@ snapshot) survive and must be removed manually if no longer needed.
 |-------------------------------|-----------------------------------------|------------|
 | `validate-infrastructure.yml` | PR / push to `main` touching IaC files  | Optional read-only OIDC role for `validate-template` |
 | `deploy-infrastructure.yml`   | Manual `workflow_dispatch` only         | OIDC deploy role per GitHub Environment |
+| `app-ci.yml`                  | PR / push to `main` touching `app/`     | None: pytest and `docker build` only |
 
 ### One-time setup (when ready)
 
@@ -74,13 +75,48 @@ snapshot) survive and must be removed manually if no longer needed.
    | `AWS_VALIDATE_ROLE_ARN` | repository  | optional; enables the API validation job |
    | `INFRA_DEPLOY_ENABLED`  | repository  | `true` - **only** once templates are implemented |
 
-## Relationship to python-ecommerce-app
+## Application (`app/`)
 
-This repository provides the platform; the application repository ships the code.
+The FastAPI application is part of this repository. Its CI (`app-ci.yml`) is
+independent of the infrastructure workflows: it runs only when `app/` changes,
+runs pytest and checks that the Docker image builds. It has no AWS access.
 
-1. The app repository's CI builds a Docker image and pushes it to the ECR
-   repository created here, tagged with the git commit SHA (tags are immutable).
+### Build, test and run locally
+
+```bash
+cd app
+python3.13 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest
+uvicorn main:app --reload --port 8080
+```
+
+### Docker
+
+```bash
+docker build -t ecommerce-api ./app
+docker run --rm -p 8080:8080 ecommerce-api
+curl http://localhost:8080/health      # {"status":"healthy"}
+```
+
+### Runtime contract with the infrastructure
+
+| Setting | Value on AWS | Source |
+|---------|--------------|--------|
+| Container port | `8080` | `AppContainerPort` (security groups, ALB target group); `UVICORN_PORT` in the container |
+| Health check | `GET /health` -> 200 | `AppHealthCheckPath`; never depends on the database |
+| Trusted proxies | VPC CIDR, e.g. `10.10.0.0/16` | `UVICORN_FORWARDED_ALLOW_IPS`; see [security.md](security.md) |
+| Environment | `dev` / `prod` | `APP_ENV` |
+| Logs | stdout/stderr | Docker `awslogs` driver or CloudWatch agent |
+
+The ALB listener port (80 or 443) is configured separately and does not change
+when `AppContainerPort` does.
+
+### Planned release flow
+
+1. App CI builds the image and pushes it to the ECR repository created here,
+   tagged with the git commit SHA (tags are immutable). Not implemented yet.
 2. The image tag is passed to the launch template (planned `AppImageTag`
    parameter), and an Auto Scaling instance refresh rolls it out.
 3. At runtime the app reads its configuration from environment variables and its
-   secrets from Secrets Manager, and exposes `GET /health` for the ALB.
+   secrets from Secrets Manager.

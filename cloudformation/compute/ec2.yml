@@ -1,8 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - EC2 launch
-  template for application hosts that run the python-ecommerce-app container
-  image pulled from Amazon ECR.
+  template for application hosts that run the FastAPI container image (built
+  from app/) pulled from Amazon ECR.
 
 Metadata:
   ImplementationStatus: PLACEHOLDER
@@ -43,7 +43,12 @@ Parameters:
 #     No KeyName       shell access through SSM Session Manager only
 #     UserData         install Docker + CloudWatch agent, log in to ECR, fetch
 #                      secrets from Secrets Manager at boot (never baked into
-#                      user data), run the container on AppContainerPort
+#                      user data), run the container on AppContainerPort:
+#                        docker run -p <AppContainerPort>:<AppContainerPort>
+#                          -e UVICORN_PORT=<AppContainerPort>
+#                          -e UVICORN_FORWARDED_ALLOW_IPS=<VpcCidr>
+#                          -e APP_ENV=<Environment> --log-driver awslogs ...
+#                      (NetworkStack.Outputs.VpcCidr; see docs/security.md)
 #     TagSpecifications  instance + volume tags (Name, Component)
 #   AppLogGroup        /<project>/<env>/app, RetentionInDays: LogRetentionDays
 Resources:

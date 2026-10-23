@@ -26,7 +26,13 @@
 - Only the ALB and NAT Gateways live in public subnets.
 - The ALB security group accepts traffic only from the CloudFront origin-facing
   managed prefix list; a secret origin header blocks other CloudFront distributions.
-- App instances accept traffic only from the ALB security group.
+- App instances accept traffic only from the ALB security group, on
+  `AppContainerPort` (8080).
+- The app trusts `X-Forwarded-For`/`-Proto` only from
+  `UVICORN_FORWARDED_ALLOW_IPS`. The image default is loopback only; on EC2 it is
+  set to the VPC CIDR (the ALB's addresses change as it scales), never `*`.
+  Together with the app security group, this means only the ALB can set the
+  client IP and scheme the app sees.
 - The database accepts port 5432 only from the app security group, and the data
   subnets have no route to the internet.
 - VPC Flow Logs are enabled.

@@ -7,7 +7,7 @@
     "AvailabilityZoneA": "us-east-2a",
     "AvailabilityZoneB": "us-east-2b",
     "AppInstanceType": "t3.small",
-    "AppContainerPort": "8000",
+    "AppContainerPort": "8080",
     "AppHealthCheckPath": "/health",
     "AsgMinSize": "2",
     "AsgMaxSize": "6",

@@ -1,7 +1,8 @@
 # AWS E-Commerce Infrastructure
 
 Infrastructure as Code (AWS CloudFormation) for a highly available, secure AWS
-platform that hosts the **python-ecommerce-app** FastAPI service.
+platform, plus the **FastAPI application** it hosts, in one repository
+(`app/`).
 
 > **Project status: initial scaffolding.**
 > The repository structure, conventions, parameters, scripts and CI skeletons are in
@@ -63,6 +64,7 @@ layout, stack dependencies and naming/tagging conventions.
 ## Repository structure
 
 ```
+app/                        FastAPI application, tests and Dockerfile (see app/README.md)
 cloudformation/
   main.yml                  Root stack - orchestrates all nested stacks
   network/                  VPC, subnets, routing, security groups
@@ -80,6 +82,7 @@ scripts/
   deploy.sh                 Package + deploy via change sets (guarded)
   destroy.sh                Confirmed teardown of an environment
 .github/workflows/
+  app-ci.yml                    App tests + Docker build on changes to app/
   validate-infrastructure.yml   Runs on PRs and pushes to main
   deploy-infrastructure.yml     Manual, disabled by default, OIDC
 docs/                       Architecture, security, deployment, cost estimate
@@ -87,12 +90,34 @@ docs/                       Architecture, security, deployment, cost estimate
 
 ## Getting started
 
+### Infrastructure
+
 ```bash
 pip install cfn-lint
 ./scripts/validate.sh
 ```
 
 Validation is offline and makes no AWS calls unless you pass `--aws`.
+
+### Application
+
+```bash
+cd app
+python3.13 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest                                  # tests, no AWS or Docker needed
+uvicorn main:app --reload --port 8080   # http://localhost:8080/docs
+```
+
+With Docker, from the repository root:
+
+```bash
+docker build -t ecommerce-api ./app
+docker run --rm -p 8080:8080 ecommerce-api
+```
+
+See [app/README.md](app/README.md) for endpoints, configuration and the
+planned PostgreSQL integration.
 
 ## Planned deployment workflow
 
@@ -108,24 +133,26 @@ Validation is offline and makes no AWS calls unless you pass `--aws`.
 Full details, including the one-time OIDC bootstrap, are in
 [docs/deployment.md](docs/deployment.md).
 
-## Relationship to python-ecommerce-app
+## Application and infrastructure contract
 
-| Repository | Owns |
-|------------|------|
-| **aws-ecommerce-infrastructure** (this repo) | Network, compute, database, storage, security, edge and monitoring |
-| **python-ecommerce-app** | FastAPI source code, tests, Dockerfile, image build and push to ECR |
+The FastAPI application lives in [`app/`](app/) in this repository. App and
+infrastructure have separate CI workflows (`app-ci.yml` and
+`validate-infrastructure.yml`), triggered by changes to their own paths.
 
-The contract between them:
-
-- The app is packaged as a Docker image, pushed to the ECR repository created here,
-  and tagged with its git commit SHA.
-- The container listens on port `8000` (`AppContainerPort`) and serves `GET /health`.
-- Database connection details and secrets come from Secrets Manager and environment
-  variables; nothing is baked into the image.
+- The app is packaged as a Docker image (`app/Dockerfile`, Python 3.13, non-root).
+  Pushing it to the ECR repository created here, tagged with the git commit SHA,
+  is planned.
+- The container listens on port `8080` (`AppContainerPort`) and serves
+  `GET /health` for the ALB target group, with no database dependency.
+- Configuration comes from environment variables and secrets from Secrets
+  Manager; nothing is baked into the image.
+- On AWS, `UVICORN_FORWARDED_ALLOW_IPS` is set to the VPC CIDR so only the ALB's
+  `X-Forwarded-*` headers are trusted (see [docs/security.md](docs/security.md)).
 
 ## Roadmap
 
 - [x] Repository scaffolding, conventions, CI validation
+- [x] FastAPI application (`app/`) with tests, Dockerfile and CI
 - [ ] Network: VPC, subnets, IGW, NAT, route tables, flow logs
       (template implemented in `network/vpc.yml`; test deployment pending)
 - [ ] Security groups

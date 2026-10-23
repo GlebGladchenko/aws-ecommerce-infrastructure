@@ -1,0 +1,80 @@
+name: App CI
+
+# Tests the FastAPI application and checks that its Docker image builds.
+# Independent of the infrastructure workflows: it triggers only on app/
+# changes, needs no AWS credentials and pushes nothing.
+on:
+  pull_request:
+    paths:
+      - "app/**"
+      - ".github/workflows/app-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - ".github/workflows/app-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: app
+
+jobs:
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # TODO: pin third-party actions to full commit SHAs.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            app/requirements.txt
+            app/requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run pytest
+        run: pytest
+
+  docker:
+    name: Build Docker image
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build --tag "ecommerce-api:${GITHUB_SHA}" .
+
+      # Start the container and wait for the image's own HEALTHCHECK, which
+      # calls GET /health inside the container.
+      - name: Smoke test
+        run: |
+          docker run --detach --name ecommerce-api --publish 8080:8080 "ecommerce-api:${GITHUB_SHA}"
+          for _ in $(seq 30); do
+            status="$(docker inspect --format '{{.State.Health.Status}}' ecommerce-api)"
+            [ "$status" = healthy ] && break
+            sleep 2
+          done
+          docker logs ecommerce-api
+          [ "$status" = healthy ] || { echo "::error::Container did not become healthy (status: $status)"; exit 1; }
+          curl --fail --silent --show-error http://localhost:8080/health
+          curl --fail --silent --show-error --output /dev/null http://localhost:8080/api/products
+
+      - name: Stop container
+        if: always()
+        run: docker rm --force ecommerce-api || true
