@@ -175,7 +175,7 @@ DEPLOY_ARGS=(
   --template-file "$PACKAGED_TEMPLATE"
   --s3-bucket "$CFN_ARTIFACT_BUCKET"
   --s3-prefix "$STACK_NAME"
-  --capabilities CAPABILITY_IAM
+  --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND
   --parameter-overrides "${PARAM_OVERRIDES[@]}"
   --tags "${TAGS[@]}"
   --no-fail-on-empty-changeset

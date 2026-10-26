@@ -1,14 +1,20 @@
 AWSTemplateFormatVersion: "2010-09-09"
+# Required for Fn::If in DeletionPolicy / UpdateReplacePolicy; the root stack
+# must be deployed with CAPABILITY_AUTO_EXPAND (scripts/deploy.sh does this).
+Transform: AWS::LanguageExtensions
 Description: >-
-  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - Amazon ECR
+  AWS E-Commerce Infrastructure - Amazon ECR
   repository for the FastAPI application image built from app/.
 
-Metadata:
-  ImplementationStatus: PLACEHOLDER
-  cfn-lint:
-    config:
-      ignore_checks:
-        - W2001 # TODO: remove once real resources consume the parameters
+# Repository <project>-<env>-api
+#   - Tags are immutable: images are pushed once, tagged with the git SHA (never
+#     `latest`, which would fail on the second push).
+#   - Encryption is AES256 (ECR-managed). Changing it later replaces the
+#     repository, which fails because the name is fixed - decide before deploy.
+#   - prod is retained on stack deletion; dev is emptied and deleted with the
+#     stack, so it can be torn down and redeployed without a name clash.
+#   - No repository policy: pull access comes from the instance role (iam.yml),
+#     push access from a GitHub OIDC role for app CI.
 
 Parameters:
   ProjectName:
@@ -19,19 +25,68 @@ Parameters:
     Type: String
     AllowedValues: [dev, prod]
     Description: Deployment environment.
+  UntaggedImageExpiryDays:
+    Type: Number
+    Default: 7
+    MinValue: 1
+    Description: Days after which untagged images (e.g. failed pushes) are expired.
+  MaxImageCount:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    Description: Number of most recent images kept; older ones are expired.
 
-# TODO: Planned resources
-#   Repository   <project>-<env>-app
-#     ImageTagMutability: IMMUTABLE  (images are referenced by git SHA tag)
-#     ImageScanningConfiguration: ScanOnPush: true
-#     EncryptionConfiguration: KMS
-#     LifecyclePolicy: expire untagged images after N days, keep last N tagged
-#     RepositoryPolicy: none - pull access is granted via the instance role,
-#                       push access via a GitHub OIDC role for app CI
-#     DeletionPolicy / UpdateReplacePolicy: Retain
+Conditions:
+  IsProd: !Equals [!Ref Environment, prod]
+
 Resources:
-  PlaceholderResource:
-    Type: AWS::CloudFormation::WaitConditionHandle
+  AppRepository:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: !If [IsProd, Retain, Delete]
+    UpdateReplacePolicy: !If [IsProd, Retain, Delete]
+    Properties:
+      RepositoryName: !Sub ${ProjectName}-${Environment}-api
+      ImageTagMutability: IMMUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      EmptyOnDelete: !If [IsProd, false, true]
+      LifecyclePolicy:
+        LifecyclePolicyText: !Sub |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Expire untagged images after ${UntaggedImageExpiryDays} days",
+                "selection": {
+                  "tagStatus": "untagged",
+                  "countType": "sinceImagePushed",
+                  "countUnit": "days",
+                  "countNumber": ${UntaggedImageExpiryDays}
+                },
+                "action": { "type": "expire" }
+              },
+              {
+                "rulePriority": 2,
+                "description": "Keep only the last ${MaxImageCount} images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": ${MaxImageCount}
+                },
+                "action": { "type": "expire" }
+              }
+            ]
+          }
 
-# TODO: Planned outputs
-#   RepositoryName, RepositoryArn, RepositoryUri
+Outputs:
+  RepositoryUri:
+    Description: Full ECR repository URI
+    Value: !GetAtt AppRepository.RepositoryUri
+  RepositoryArn:
+    Description: ECR repository ARN
+    Value: !GetAtt AppRepository.Arn
+  RepositoryName:
+    Description: ECR repository name
+    Value: !Ref AppRepository

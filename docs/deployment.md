@@ -45,8 +45,9 @@ The stack is named `<ProjectName>-<Environment>`, e.g. `ecommerce-dev`.
 ./scripts/destroy.sh prod --allow-prod
 ```
 
-Resources with `Retain`/`Snapshot` deletion policies (S3 buckets, ECR, final RDS
-snapshot) survive and must be removed manually if no longer needed.
+Resources with `Retain`/`Snapshot` deletion policies (S3 buckets, the prod ECR
+repository, final RDS snapshot) survive and must be removed manually if no
+longer needed. The dev ECR repository is emptied and deleted with the stack.
 
 ## GitHub Actions
 

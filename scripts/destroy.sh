@@ -8,7 +8,7 @@
 # Always asks for the stack name to be typed as confirmation.
 # prod additionally requires --allow-prod.
 #
-# Resources with DeletionPolicy Retain/Snapshot (S3 buckets, ECR repository,
+# Resources with DeletionPolicy Retain/Snapshot (S3 buckets, prod ECR repository,
 # final RDS snapshot) survive stack deletion and must be cleaned up manually
 # if they are no longer needed - they continue to incur cost.
 #
