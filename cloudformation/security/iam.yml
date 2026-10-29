@@ -1,14 +1,41 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - least-privilege
-  IAM roles used by the workload at runtime.
+  AWS E-Commerce Infrastructure - least-privilege IAM roles used by the
+  workload at runtime.
+
+# -----------------------------------------------------------------------------
+# AppInstanceRole (+ AppInstanceProfile) - assumed by the application EC2
+# instances. Path /<project>/<env>/ and no RoleName, so CloudFormation can
+# replace the role safely.
+#
+#   Permission                              Scope
+#   ecr:GetAuthorizationToken               "*" (account-level API, no resource)
+#   ecr:BatchGetImage, GetDownloadUrlForLayer,
+#       BatchCheckLayerAvailability         the app repository only (pull, no push)
+#   logs:CreateLogStream, PutLogEvents      the app log group only
+#   autoscaling:CompleteLifecycleAction     the app Auto Scaling group only
+#                                           (readiness hook, autoscaling.yml)
+#   AmazonSSMManagedInstanceCore            Session Manager (EnableSessionManager)
+#
+# The repository, log group and Auto Scaling group are referenced by name
+# because they belong to other stacks (ECR is a separate bootstrap stack; the
+# log group and the group are created after this role). main.yml passes the
+# names, following the conventions <project>-<env>-api, /<project>/<env>/app
+# and <project>-<env>-app-asg.
+#
+# TODO (full stage): secretsmanager:GetSecretValue on AppSecretArn and
+# DbMasterSecretArn, kms:Decrypt via kms:ViaService, s3:GetObject/PutObject on
+# AssetsBucketArn/* - add the parameters once those stacks exist.
+#
+# Out of scope for this template (bootstrap, deployed once per account):
+#   GitHub OIDC identity provider and the deployment role assumed by
+#   .github/workflows/deploy-infrastructure.yml. A stack cannot create the
+#   role that deploys it. See docs/security.md.
+# -----------------------------------------------------------------------------
 
 Metadata:
-  ImplementationStatus: PLACEHOLDER
-  cfn-lint:
-    config:
-      ignore_checks:
-        - W2001 # TODO: remove once real resources consume the parameters
+  # Checked by scripts/deploy.sh. Set to IMPLEMENTED when this template is complete.
+  ImplementationStatus: IMPLEMENTED
 
 Parameters:
   ProjectName:
@@ -19,27 +46,89 @@ Parameters:
     Type: String
     AllowedValues: [dev, prod]
     Description: Deployment environment.
-  # TODO: EcrRepositoryArn, AppSecretArn, AssetsBucketArn, DbMasterSecretArn
+  AppRepositoryName:
+    Type: String
+    AllowedPattern: "^[a-z0-9][a-z0-9._/-]{1,255}$"
+    Description: ECR repository the instances may pull from (e.g. ecommerce-dev-api).
+  AppLogGroupName:
+    Type: String
+    Description: CloudWatch Logs group the container writes to (e.g. /ecommerce/dev/app).
+  AutoScalingGroupName:
+    Type: String
+    Description: Auto Scaling group whose readiness hook the instances complete.
+  EnableSessionManager:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Attach AmazonSSMManagedInstanceCore so administrators can use Session Manager.
 
-# TODO: Planned resources
-#   AppInstanceRole (+ InstanceProfile)   Path /<project>/<env>/, no RoleName
-#                                          (lets CloudFormation replace it safely)
-#     Managed:  AmazonSSMManagedInstanceCore (Session Manager instead of SSH)
-#     Inline, each scoped to a specific ARN - no "Resource: *" for data access:
-#       ecr:GetAuthorizationToken (account-level by design) + BatchGetImage /
-#           GetDownloadUrlForLayer on EcrRepositoryArn
-#       secretsmanager:GetSecretValue on AppSecretArn and DbMasterSecretArn
-#       kms:Decrypt on the secrets' KMS key via kms:ViaService condition
-#       s3:GetObject / PutObject on AssetsBucketArn/*
-#       logs:CreateLogStream / PutLogEvents on the app log group
-#
-# Out of scope for this template (bootstrap, deployed once per account):
-#   GitHub OIDC identity provider and the deployment role assumed by
-#   .github/workflows/deploy-infrastructure.yml. A stack cannot create the
-#   role that deploys it. See docs/security.md.
+Conditions:
+  SessionManagerEnabled: !Equals [!Ref EnableSessionManager, "true"]
+
 Resources:
-  PlaceholderResource:
-    Type: AWS::CloudFormation::WaitConditionHandle
+  AppInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: !Sub /${ProjectName}/${Environment}/
+      Description: !Sub ${ProjectName}-${Environment} application EC2 instances
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns: !If
+        - SessionManagerEnabled
+        - [!Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"]
+        - !Ref AWS::NoValue
+      Policies:
+        - PolicyName: pull-app-image
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: EcrLogin
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: EcrPullAppRepository
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                Resource: !Sub arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/${AppRepositoryName}
+        - PolicyName: write-app-logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: AppLogStreams
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${AppLogGroupName}:*
+        - PolicyName: complete-readiness-hook
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: CompleteOwnLaunchHook
+                Effect: Allow
+                Action: autoscaling:CompleteLifecycleAction
+                Resource: !Sub arn:${AWS::Partition}:autoscaling:${AWS::Region}:${AWS::AccountId}:autoScalingGroup:*:autoScalingGroupName/${AutoScalingGroupName}
 
-# TODO: Planned outputs
-#   AppInstanceRoleArn, AppInstanceProfileArn
+  AppInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: !Sub /${ProjectName}/${Environment}/
+      Roles:
+        - !Ref AppInstanceRole
+
+# Consumed by main.yml via !GetAtt IamStack.Outputs.<Name>.
+Outputs:
+  AppInstanceRoleArn:
+    Description: IAM role assumed by the application instances.
+    Value: !GetAtt AppInstanceRole.Arn
+  AppInstanceProfileArn:
+    Description: Instance profile for the application launch template.
+    Value: !GetAtt AppInstanceProfile.Arn

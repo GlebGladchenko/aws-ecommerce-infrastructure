@@ -1,7 +1,9 @@
 # Architecture
 
-> **Status:** design target. The CloudFormation templates are scaffolding
-> (`ImplementationStatus: PLACEHOLDER`); none of the resources below exist yet.
+> **Status:** the network and compute layers (VPC, security groups, VPC
+> endpoints, IAM instance role, ALB, launch template, Auto Scaling group) and
+> the ECR repository are implemented. RDS, S3, Secrets Manager, CloudFront, WAF
+> and monitoring are still scaffolding (`ImplementationStatus: PLACEHOLDER`).
 
 ## Overview
 
@@ -18,7 +20,7 @@ flowchart TB
     subgraph vpc[VPC - 2 Availability Zones]
         subgraph public[Public subnets]
             alb[Application Load Balancer]
-            nat[NAT Gateway per AZ]
+            nat[NAT Gateway per AZ<br/>optional - none in dev]
         end
         subgraph app[Private app subnets]
             asg[Auto Scaling group<br/>EC2 + Docker]
@@ -31,7 +33,8 @@ flowchart TB
     alb --> asg
     asg --> rds
     asg -- outbound via --> nat
-    asg -. pull image .-> ecr[(Amazon ECR)]
+    asg -. pull image via VPC endpoints .-> ecr[(Amazon ECR)]
+    asg -. logs via VPC endpoint .-> cwl[CloudWatch Logs]
     asg -. read secrets .-> sm[Secrets Manager]
     cw[CloudWatch alarms] --> sns[SNS alerts]
     trail[CloudTrail] --> logs[(Audit log bucket)]
@@ -51,33 +54,38 @@ flowchart TB
 | Tier    | Subnets       | Route to internet     | Hosts                     |
 |---------|---------------|-----------------------|---------------------------|
 | Public  | public-a / -b | Internet Gateway      | ALB, NAT Gateway(s)       |
-| App     | app-a / -b    | NAT Gateway (egress)  | EC2 Auto Scaling group    |
+| App     | app-a / -b    | NAT Gateway (egress), or none: VPC endpoints only | EC2 Auto Scaling group    |
 | Data    | data-a / -b   | none                  | RDS primary + standby     |
 
-`dev` uses `10.10.0.0/16` and a single NAT Gateway; `prod` uses `10.20.0.0/16` and
-one NAT Gateway per AZ.
+`dev` uses `10.10.0.0/16` and no NAT Gateway: the app tier reaches ECR,
+CloudWatch Logs and Systems Manager through interface VPC endpoints
+(`network/endpoints.yml`, AZ a only) and S3 through the gateway endpoint.
+`prod` uses `10.20.0.0/16`, one NAT Gateway per AZ and endpoints in both AZs.
 
 ## Stack layout
 
 `cloudformation/main.yml` is the root stack. It creates one nested stack per
 component and wires them together with `!GetAtt <Stack>.Outputs.<Name>`.
 
-| Nested stack           | Template                       | Depends on                         |
-|------------------------|--------------------------------|------------------------------------|
-| NetworkStack           | network/vpc.yml                | -                                  |
-| SecurityGroupsStack    | network/security-groups.yml    | Network                            |
-| AlertingStack          | monitoring/sns.yml             | -                                  |
-| SecretsStack           | security/secrets.yml           | -                                  |
-| StorageStack           | storage/s3.yml                 | -                                  |
-| ContainerRegistryStack | storage/ecr.yml                | -                                  |
-| DatabaseStack          | database/rds.yml               | Network, SecurityGroups            |
-| IamStack               | security/iam.yml               | Secrets, Storage, ECR, Database    |
-| LoadBalancerStack      | compute/alb.yml                | Network, SecurityGroups, Storage   |
-| LaunchTemplateStack    | compute/ec2.yml                | SecurityGroups, IAM, ECR, Secrets  |
-| AutoScalingStack       | compute/autoscaling.yml        | Network, LoadBalancer, LaunchTemplate |
-| WafStack               | networking/waf.yml             | -                                  |
-| CdnStack               | networking/cloudfront.yml      | LoadBalancer, Storage, WAF         |
-| MonitoringStack        | monitoring/cloudwatch.yml      | Alerting, LoadBalancer, ASG, Database |
+| Nested stack           | Template                       | Stage   | Depends on                         |
+|------------------------|--------------------------------|---------|------------------------------------|
+| NetworkStack           | network/vpc.yml                | network | -                                  |
+| SecurityGroupsStack    | network/security-groups.yml    | network | Network                            |
+| EndpointsStack         | network/endpoints.yml          | compute | Network, SecurityGroups            |
+| IamStack               | security/iam.yml               | compute | - (ECR repo and log group by name) |
+| LoadBalancerStack      | compute/alb.yml                | compute | Network, SecurityGroups            |
+| LaunchTemplateStack    | compute/ec2.yml                | compute | Network, SecurityGroups, IAM       |
+| AutoScalingStack       | compute/autoscaling.yml        | compute | Network, Endpoints, LoadBalancer, LaunchTemplate |
+| AlertingStack          | monitoring/sns.yml             | full    | -                                  |
+| SecretsStack           | security/secrets.yml           | full    | -                                  |
+| StorageStack           | storage/s3.yml                 | full    | -                                  |
+| DatabaseStack          | database/rds.yml               | full    | Network, SecurityGroups            |
+| CdnStack               | networking/cloudfront.yml      | full    | LoadBalancer, Storage, WAF         |
+| MonitoringStack        | monitoring/cloudwatch.yml      | full    | Alerting, LoadBalancer, ASG, Database |
+
+Separate stacks, not nested: `storage/ecr.yml` as `<stack>-ecr` (the image must
+exist before the compute stage, and the images must outlive it) and
+`networking/waf.yml` as `<stack>-waf` in us-east-1.
 
 `network/` holds in-VPC networking; `networking/` holds the edge layer
 (CloudFront, WAF).
@@ -115,7 +123,7 @@ rather than nested under the root stack.
 |------------------------|------------------------------|
 | Operational excellence | All infrastructure as code, CI validation, change sets reviewed before execution |
 | Security               | Private app/data tiers, least-privilege IAM, no SSH (SSM), encryption everywhere, WAF, secrets in Secrets Manager, OIDC instead of access keys |
-| Reliability            | Two AZs, Multi-AZ RDS, ASG with ELB health checks, NAT per AZ in prod |
+| Reliability            | Two AZs, Multi-AZ RDS, ASG with ELB health checks and a readiness lifecycle hook, CloudFormation-managed instance refresh (launch before terminate, automatic rollback), NAT per AZ in prod |
 | Performance efficiency | CloudFront caching for static assets, target-tracking scaling, Graviton (t4g) RDS |
 | Cost optimization      | Environment-sized parameters (single NAT, single-AZ DB in dev), log retention, ECR lifecycle |
 | Sustainability         | Right-sized burstable instances, scale-in when idle |

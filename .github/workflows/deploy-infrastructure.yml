@@ -16,6 +16,22 @@ on:
         options: [dev, prod]
         default: dev
         required: true
+      stage:
+        description: Deployment stage (each includes the previous one)
+        type: choice
+        options: [network, compute, full]
+        default: network
+        required: true
+      image:
+        description: App image digest (sha256:...) or tag; empty reuses the deployed one (compute/full)
+        type: string
+        default: ""
+        required: false
+      ami:
+        description: App AMI ID or "latest"; empty reuses the deployed one (compute/full)
+        type: string
+        default: ""
+        required: false
       execute_changeset:
         description: Execute the change set (unchecked = create change set for review only)
         type: boolean
@@ -71,6 +87,9 @@ jobs:
       id-token: write # OIDC token for AssumeRoleWithWebIdentity
     env:
       ENVIRONMENT: ${{ inputs.environment }}
+      STAGE: ${{ inputs.stage }}
+      APP_IMAGE: ${{ inputs.image }}
+      APP_AMI: ${{ inputs.ami }}
       EXECUTE_CHANGESET: ${{ inputs.execute_changeset }}
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-2' }}
       CFN_ARTIFACT_BUCKET: ${{ vars.CFN_ARTIFACT_BUCKET }}
@@ -92,7 +111,13 @@ jobs:
 
       - name: Deploy root stack
         run: |
-          args=("$ENVIRONMENT" --yes)
+          args=("$ENVIRONMENT" --stage "$STAGE" --yes)
+          if [ -n "$APP_IMAGE" ]; then
+            args+=(--image "$APP_IMAGE")
+          fi
+          if [ -n "$APP_AMI" ]; then
+            args+=(--ami "$APP_AMI")
+          fi
           if [ "$EXECUTE_CHANGESET" = "true" ]; then
             args+=(--execute)
           fi

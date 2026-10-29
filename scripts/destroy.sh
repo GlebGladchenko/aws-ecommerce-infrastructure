@@ -8,9 +8,12 @@
 # Always asks for the stack name to be typed as confirmation.
 # prod additionally requires --allow-prod.
 #
-# Resources with DeletionPolicy Retain/Snapshot (S3 buckets, prod ECR repository,
-# final RDS snapshot) survive stack deletion and must be cleaned up manually
-# if they are no longer needed - they continue to incur cost.
+# Resources with DeletionPolicy Retain/Snapshot (S3 buckets, final RDS
+# snapshot) survive stack deletion and must be cleaned up manually if they are
+# no longer needed - they continue to incur cost.
+#
+# Not touched: the separate <stack>-ecr (us-east-2) and <stack>-waf (us-east-1)
+# stacks. Delete them with `aws cloudformation delete-stack` if needed.
 #
 set -euo pipefail
 
@@ -18,7 +21,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 AWS_REGION="${AWS_REGION:-us-east-2}"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-usage() { sed -n '3,14p' "$0"; exit "${1:-0}"; }
+usage() { sed -n '3,16p' "$0"; exit "${1:-0}"; }
 
 [[ $# -ge 1 ]] || usage 2
 ENVIRONMENT="$1"; shift
@@ -60,4 +63,5 @@ read -r -p "Type the stack name to confirm: " reply
 aws cloudformation delete-stack --region "$AWS_REGION" --stack-name "$STACK_NAME"
 echo "==> Waiting for deletion to complete..."
 aws cloudformation wait stack-delete-complete --region "$AWS_REGION" --stack-name "$STACK_NAME"
-echo "Stack $STACK_NAME deleted. Remember to review retained resources (S3, ECR, RDS snapshots)."
+echo "Stack $STACK_NAME deleted. Remember to review retained resources (S3, RDS snapshots)"
+echo "and the separate ${STACK_NAME}-ecr and ${STACK_NAME}-waf stacks."

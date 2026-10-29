@@ -13,6 +13,8 @@
     "AsgMaxSize": "6",
     "AsgDesiredCapacity": "2",
     "AlbCertificateArn": "",
+    "VpcEndpointAzMode": "per-az",
+    "EnableSessionManager": "true",
     "DbInstanceClass": "db.t4g.small",
     "DbAllocatedStorage": "50",
     "DbMultiAz": "true",

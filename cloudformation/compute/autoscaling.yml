@@ -1,15 +1,49 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - Auto Scaling
-  group spreading application instances across the private app subnets of
-  two Availability Zones.
+  AWS E-Commerce Infrastructure - Auto Scaling group spreading application
+  instances across the private app subnets of two Availability Zones.
+
+# -----------------------------------------------------------------------------
+# Readiness  a launch lifecycle hook (AppReadyHook) holds every new instance in
+#            Pending:Wait until its user data has started the container and
+#            /health answers locally; the instance then completes the hook
+#            (CONTINUE) and only then enters InService and the target group.
+#            A broken image or bootstrap completes it with ABANDON, or the
+#            hook times out, and the instance is terminated without ever
+#            receiving traffic. Completing the hook needs the autoscaling VPC
+#            endpoint (network/endpoints.yml) when there is no NAT.
+#
+# Health     HealthCheckType ELB: an InService instance that fails the target
+#            group health check (/health) is replaced. The grace period only
+#            needs to cover target registration, because bootstrapping is
+#            already finished when the instance enters InService.
+#
+# Scaling    target tracking keeps average CPU near CpuTargetUtilization.
+#            DefaultInstanceWarmup keeps a new instance's CPU out of the
+#            average until it has settled, so scaling does not overshoot.
+#
+# Rollouts   UpdatePolicy AutoScalingInstanceRefresh: when the LaunchTemplate
+#            property changes (a new launch template version, e.g. a new image
+#            or AMI), CloudFormation runs an instance refresh as part of the
+#            stack update:
+#              - launch-before-terminate (MinHealthyPercentage 100,
+#                MaxHealthyPercentage 200);
+#              - each replacement must pass the readiness hook, then the
+#                warmup, before old instances are terminated;
+#              - if a replacement fails, or the UnhealthyHostsAlarm fires, the
+#                refresh fails and CloudFormation rolls the stack back, which
+#                runs a second refresh to the previous launch template version.
+#            Only one instance refresh can run at a time: do not start a
+#            manual one while a stack update is in progress.
+#
+# Capacity   CloudFormation applies DesiredCapacity when its value in the
+#            template changes; a changed value overrides whatever capacity
+#            scaling has reached at that moment.
+# -----------------------------------------------------------------------------
 
 Metadata:
-  ImplementationStatus: PLACEHOLDER
-  cfn-lint:
-    config:
-      ignore_checks:
-        - W2001 # TODO: remove once real resources consume the parameters
+  # Checked by scripts/deploy.sh. Set to IMPLEMENTED when this template is complete.
+  ImplementationStatus: IMPLEMENTED
 
 Parameters:
   ProjectName:
@@ -20,28 +54,163 @@ Parameters:
     Type: String
     AllowedValues: [dev, prod]
     Description: Deployment environment.
+  AutoScalingGroupName:
+    Type: String
+    Description: >-
+      Name of the group (e.g. ecommerce-dev-app-asg). Also used by the
+      launch template and the instance role to complete the readiness hook.
+  AppReadyHookName:
+    Type: String
+    Description: Name of the launch lifecycle hook the instances complete when ready.
   AsgMinSize:
     Type: Number
+    MinValue: 1
     Description: Minimum instances.
   AsgMaxSize:
     Type: Number
+    MinValue: 1
     Description: Maximum instances.
   AsgDesiredCapacity:
     Type: Number
+    MinValue: 1
     Description: Initial desired instances.
-  # TODO: AppSubnetIds, LaunchTemplateId, LaunchTemplateVersion, TargetGroupArn
+  AppSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private application subnets in two AZs (NetworkStack.Outputs.AppSubnetIds).
+  LaunchTemplateId:
+    Type: String
+    Description: Launch template ID (LaunchTemplateStack.Outputs.LaunchTemplateId).
+  LaunchTemplateVersion:
+    Type: String
+    Description: Launch template version (LaunchTemplateStack.Outputs.LaunchTemplateLatestVersion).
+  TargetGroupArn:
+    Type: String
+    Description: ALB target group ARN (LoadBalancerStack.Outputs.TargetGroupArn).
+  TargetGroupFullName:
+    Type: String
+    Description: Target group metric dimension (LoadBalancerStack.Outputs.TargetGroupFullName).
+  AlbFullName:
+    Type: String
+    Description: ALB metric dimension (LoadBalancerStack.Outputs.AlbFullName).
+  ReadinessTimeout:
+    Type: Number
+    Default: 600
+    MinValue: 120
+    MaxValue: 3600
+    Description: >-
+      Seconds a new instance may take to bootstrap and complete the readiness
+      hook before it is abandoned (terminated).
+  HealthCheckGracePeriod:
+    Type: Number
+    Default: 60
+    MinValue: 0
+    Description: >-
+      Seconds after an instance enters InService before failing ELB health
+      checks replace it; covers target registration (2 checks x 15 s).
+  InstanceWarmup:
+    Type: Number
+    Default: 120
+    MinValue: 0
+    Description: >-
+      Seconds after InService before a new instance counts towards scaling
+      metrics, and before an instance refresh moves on to the next batch.
+  CpuTargetUtilization:
+    Type: Number
+    Default: 60
+    MinValue: 10
+    MaxValue: 90
+    Description: Target average CPU utilization (%) for target-tracking scaling.
 
-# TODO: Planned resources
-#   AutoScalingGroup   <project>-<env>-app-asg in AppSubnetIds (2 AZs)
-#                      HealthCheckType: ELB, grace period ~300s
-#                      TargetGroupARNs: [TargetGroupArn]
-#                      UpdatePolicy AutoScalingRollingUpdate (MinInstancesInService >= 1)
-#                      CreationPolicy / cfn-signal so a broken image fails the deploy
-#   ScalingPolicy      target tracking on ASGAverageCPUUtilization (~50%);
-#                      consider ALBRequestCountPerTarget later
 Resources:
-  PlaceholderResource:
-    Type: AWS::CloudFormation::WaitConditionHandle
+  # Watched by the instance refresh: any unhealthy target during a rollout
+  # fails the refresh and rolls the stack back. Outside rollouts it has no
+  # actions (alerting is added by monitoring/cloudwatch.yml in the full stage).
+  UnhealthyHostsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub ${ProjectName}-${Environment}-app-unhealthy-hosts
+      AlarmDescription: At least one ALB target failed its health check in two consecutive minutes.
+      Namespace: AWS/ApplicationELB
+      MetricName: UnHealthyHostCount
+      Dimensions:
+        - Name: TargetGroup
+          Value: !Ref TargetGroupFullName
+        - Name: LoadBalancer
+          Value: !Ref AlbFullName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
 
-# TODO: Planned outputs
-#   AutoScalingGroupName
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: UnhealthyHostsAlarm
+    UpdatePolicy:
+      AutoScalingInstanceRefresh:
+        Strategy: Rolling
+        Preferences:
+          MinHealthyPercentage: 100
+          MaxHealthyPercentage: 200
+          InstanceWarmup: !Ref InstanceWarmup
+          SkipMatching: true
+          ScaleInProtectedInstances: Refresh
+          StandbyInstances: Terminate
+          AlarmSpecification:
+            Alarms:
+              - !Sub ${ProjectName}-${Environment}-app-unhealthy-hosts
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroupName
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplateId
+        Version: !Ref LaunchTemplateVersion
+      MinSize: !Ref AsgMinSize
+      MaxSize: !Ref AsgMaxSize
+      DesiredCapacity: !Ref AsgDesiredCapacity
+      VPCZoneIdentifier: !Ref AppSubnetIds
+      TargetGroupARNs:
+        - !Ref TargetGroupArn
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: !Ref HealthCheckGracePeriod
+      DefaultInstanceWarmup: !Ref InstanceWarmup
+      # Defined inline so it also applies to the instances launched when the
+      # group is created.
+      LifecycleHookSpecificationList:
+        - LifecycleHookName: !Ref AppReadyHookName
+          LifecycleTransition: autoscaling:EC2_INSTANCE_LAUNCHING
+          HeartbeatTimeout: !Ref ReadinessTimeout
+          DefaultResult: ABANDON
+      # Replacements (instance refresh, health replacement, rebalancing) launch
+      # the new instance before terminating the old one, so capacity never
+      # drops below the desired count.
+      InstanceMaintenancePolicy:
+        MinHealthyPercentage: 100
+        MaxHealthyPercentage: 200
+      # Group metrics at 1-minute granularity are free.
+      MetricsCollection:
+        - Granularity: 1Minute
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-app
+          PropagateAtLaunch: true
+
+  CpuTargetTrackingPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref AutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+        TargetValue: !Ref CpuTargetUtilization
+
+# Consumed by main.yml via !GetAtt AutoScalingStack.Outputs.<Name>.
+Outputs:
+  AutoScalingGroupName:
+    Description: Name of the application Auto Scaling group.
+    Value: !Ref AutoScalingGroup
+  UnhealthyHostsAlarmName:
+    Description: Alarm that stops and rolls back an instance refresh.
+    Value: !Ref UnhealthyHostsAlarm

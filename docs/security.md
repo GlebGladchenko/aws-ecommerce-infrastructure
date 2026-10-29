@@ -1,7 +1,7 @@
 # Security
 
-> **Status:** planned controls. They will be implemented template by template;
-> this document is updated as each one lands.
+> **Status:** controls for the network and compute layers are implemented;
+> the rest are planned and documented here as each template lands.
 
 ## Identity and access
 
@@ -16,16 +16,28 @@
   because a stack cannot create the role that deploys it. TODO: add a
   `bootstrap/` template for these.
 - **Runtime role** (`security/iam.yml`): each permission is scoped to a specific
-  resource ARN (ECR repository, secret, bucket, log group). The only exception is
-  `ecr:GetAuthorizationToken`, which AWS does not support scoping.
+  resource ARN. Implemented: image pull (no push) on the `<project>-<env>-api`
+  repository, `CreateLogStream`/`PutLogEvents` on the app log group,
+  `CompleteLifecycleAction` on the app Auto Scaling group (readiness hook), and
+  `AmazonSSMManagedInstanceCore` for Session Manager. Planned: secrets and the
+  assets bucket. The only unscoped action is `ecr:GetAuthorizationToken`, which
+  AWS does not support scoping.
+- **Instance metadata:** IMDSv2 only, hop limit 1, so the container cannot reach
+  the metadata service or the instance role credentials.
 - **No SSH.** Instances have no key pair and no port 22; administrators use
   SSM Session Manager, which is IAM-controlled and logged.
 
 ## Network
 
-- Only the ALB and NAT Gateways live in public subnets.
+- Only the ALB and NAT Gateways live in public subnets. Instances have no
+  public IP; with `NatGatewayMode=none` the app tier has no internet route at
+  all and reaches AWS APIs through VPC endpoints, whose security group admits
+  only 443 from the app security group.
 - The ALB security group accepts traffic only from the CloudFront origin-facing
-  managed prefix list; a secret origin header blocks other CloudFront distributions.
+  managed prefix list; a secret origin header blocks other CloudFront distributions
+  (planned). For testing before CloudFront exists, `AlbTestIngressCidr` adds one
+  optional rule for a single CIDR; it is passed at deploy time and never
+  committed.
 - App instances accept traffic only from the ALB security group, on
   `AppContainerPort` (8080).
 - The app trusts `X-Forwarded-For`/`-Proto` only from
