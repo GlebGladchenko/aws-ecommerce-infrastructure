@@ -1,6 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
-# Required for Fn::If in DeletionPolicy / UpdateReplacePolicy; the root stack
-# must be deployed with CAPABILITY_AUTO_EXPAND (scripts/deploy.sh does this).
+# Required for Fn::If in DeletionPolicy / UpdateReplacePolicy, so the stack
+# must be deployed with CAPABILITY_AUTO_EXPAND.
+#
+# Deployed on its own as <ProjectName>-<Environment>-ecr, before any image is
+# pushed and independently of the root stack (see docs/deployment.md).
 Transform: AWS::LanguageExtensions
 Description: >-
   AWS E-Commerce Infrastructure - Amazon ECR

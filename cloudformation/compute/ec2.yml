@@ -1,15 +1,46 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  [PLACEHOLDER - NOT DEPLOYABLE] AWS E-Commerce Infrastructure - EC2 launch
-  template for application hosts that run the FastAPI container image (built
-  from app/) pulled from Amazon ECR.
+  AWS E-Commerce Infrastructure - EC2 launch template for application hosts
+  that run the FastAPI container image (built from app/) pulled from Amazon ECR.
+
+# -----------------------------------------------------------------------------
+# Boot sequence (UserData, first boot only). The instance is held in
+# Pending:Wait by the Auto Scaling readiness hook until step 5, so it receives
+# no traffic and an instance refresh does not move on until it is ready.
+#
+#   1. Docker   used from the AMI if present (custom AMI, recommended for
+#               prod). Otherwise installed with dnf from the Amazon Linux 2023
+#               repositories, which are S3 buckets reached through the S3
+#               gateway endpoint in network/vpc.yml - no NAT needed, but the
+#               gateway endpoint (route on the app route tables, policy
+#               allowing the al2023-repos-<region>-* bucket) is a hard
+#               dependency. The AMI pins the repository release, so a given
+#               AMI always installs the same Docker build.
+#   2. Image    docker login via the ecr.api endpoint, docker pull via ecr.dkr
+#               (manifests) and S3 (layers), then docker logout.
+#   3. Service  a systemd unit (Restart=always, enabled at boot) runs the
+#               container, so it comes back after a crash or a reboot without
+#               contacting ECR again.
+#   4. Logs     the awslogs driver ships stdout/stderr to AppLogGroupName (one
+#               stream per instance ID) through the logs endpoint.
+#   5. Ready    once GET /health answers locally, the readiness hook is
+#               completed with CONTINUE (autoscaling endpoint). If any step
+#               fails it is completed with ABANDON and Auto Scaling replaces
+#               the instance; during an instance refresh the stack rolls back.
+#
+# The image is <account>.dkr.ecr.<region>.amazonaws.com/<AppRepositoryName>
+# followed by @<digest> or :<tag>, depending on AppImageReference. The
+# account and region come from pseudo parameters, never from this file.
+#
+# Hardening: IMDSv2 only with hop limit 1, so the container (one extra network
+# hop) cannot read the instance role credentials; the Docker daemon on the host
+# still can, which is all the awslogs driver needs. No key pair, no public IP,
+# encrypted root volume. Shell access is through Session Manager only.
+# -----------------------------------------------------------------------------
 
 Metadata:
-  ImplementationStatus: PLACEHOLDER
-  cfn-lint:
-    config:
-      ignore_checks:
-        - W2001 # TODO: remove once real resources consume the parameters
+  # Checked by scripts/deploy.sh. Set to IMPLEMENTED when this template is complete.
+  ImplementationStatus: IMPLEMENTED
 
 Parameters:
   ProjectName:
@@ -19,41 +50,299 @@ Parameters:
   Environment:
     Type: String
     AllowedValues: [dev, prod]
-    Description: Deployment environment.
+    Description: Deployment environment; passed to the container as APP_ENV.
   AppInstanceType:
     Type: String
-    Description: EC2 instance type.
+    Description: EC2 instance type (x86_64, to match AppAmiId).
   AppContainerPort:
     Type: Number
-    Description: Port the application container listens on.
+    MinValue: 1024
+    MaxValue: 65535
+    Description: Port the container listens on and is published on (UVICORN_PORT).
   LogRetentionDays:
     Type: Number
     Description: Retention for the application log group.
-  LatestAmiId:
-    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
-    Description: Amazon Linux 2023 AMI, resolved from the public SSM parameter.
-  # TODO: AppSecurityGroupId, InstanceProfileArn, EcrRepositoryUri,
-  #       AppSecretArn, DbMasterSecretArn, DbEndpointAddress, AppImageTag
+  # An explicit AMI ID rather than an SSM parameter type: an SSM parameter is
+  # re-resolved on every stack update, so a new AL2023 release would replace
+  # every instance (instance refresh) during an unrelated deployment.
+  # scripts/deploy.sh pins it and changes it only with --ami.
+  AppAmiId:
+    Type: AWS::EC2::Image::Id
+    Description: x86_64 Amazon Linux 2023 (or custom) AMI for the instances.
+  AppSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group for the instances (SecurityGroupsStack.Outputs.AppSecurityGroupId).
+  InstanceProfileArn:
+    Type: String
+    Description: Instance profile ARN (IamStack.Outputs.AppInstanceProfileArn).
+  AppRepositoryName:
+    Type: String
+    AllowedPattern: "^[a-z0-9][a-z0-9._/-]{1,255}$"
+    Description: ECR repository holding the application image (e.g. ecommerce-dev-api).
+  AppImageReference:
+    Type: String
+    AllowedPattern: "^(sha256:[a-f0-9]{64}|[A-Za-z0-9_][A-Za-z0-9._-]{0,127})$"
+    ConstraintDescription: Must be an image digest (sha256:<64 hex>) or an image tag.
+    Description: >-
+      Image to run: a digest (sha256:...) - preferred, immutable - or an
+      immutable tag such as the git commit SHA.
+  VpcCidr:
+    Type: String
+    Description: >-
+      VPC CIDR (NetworkStack.Outputs.VpcCidr), trusted for X-Forwarded-* headers
+      via UVICORN_FORWARDED_ALLOW_IPS, because ALB nodes connect from it.
+  AppLogGroupName:
+    Type: String
+    Description: CloudWatch Logs group for container output (e.g. /ecommerce/dev/app).
+  AutoScalingGroupName:
+    Type: String
+    Description: Auto Scaling group launching these instances (for the readiness hook).
+  AppReadyHookName:
+    Type: String
+    Description: Launch lifecycle hook the instance completes when the app is ready.
 
-# TODO: Planned resources
-#   LaunchTemplate     <project>-<env>-app-lt
-#     MetadataOptions  HttpTokens: required (IMDSv2 only), hop limit 2 (containers)
-#     BlockDevices     gp3, Encrypted: true
-#     No KeyName       shell access through SSM Session Manager only
-#     UserData         install Docker + CloudWatch agent, log in to ECR, fetch
-#                      secrets from Secrets Manager at boot (never baked into
-#                      user data), run the container on AppContainerPort:
-#                        docker run -p <AppContainerPort>:<AppContainerPort>
-#                          -e UVICORN_PORT=<AppContainerPort>
-#                          -e UVICORN_FORWARDED_ALLOW_IPS=<VpcCidr>
-#                          -e APP_ENV=<Environment> --log-driver awslogs ...
-#                      (NetworkStack.Outputs.VpcCidr; see docs/security.md)
-#     TagSpecifications  instance + volume tags (Name, Component)
-#   AppLogGroup        /<project>/<env>/app, RetentionInDays: LogRetentionDays
 Resources:
-  PlaceholderResource:
-    Type: AWS::CloudFormation::WaitConditionHandle
+  AppLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Ref AppLogGroupName
+      RetentionInDays: !Ref LogRetentionDays
 
-# TODO: Planned outputs
-#   LaunchTemplateId, LaunchTemplateLatestVersion, AppLogGroupName
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub ${ProjectName}-${Environment}-app-lt
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags:
+            - Key: Name
+              Value: !Sub ${ProjectName}-${Environment}-app-lt
+      LaunchTemplateData:
+        ImageId: !Ref AppAmiId
+        InstanceType: !Ref AppInstanceType
+        IamInstanceProfile:
+          Arn: !Ref InstanceProfileArn
+        # No KeyName and no public IP: private subnets, Session Manager only.
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: false
+            Groups:
+              - !Ref AppSecurityGroupId
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+          HttpPutResponseHopLimit: 1
+        # Standard credits: a burstable instance is throttled to its baseline
+        # when credits run out instead of accruing surplus-credit charges.
+        CreditSpecification:
+          CpuCredits: standard
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda # AL2023 root device; size comes from the AMI
+            Ebs:
+              VolumeType: gp3
+              Encrypted: true
+              DeleteOnTermination: true
+        TagSpecifications:
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Sub ${ProjectName}-${Environment}-app
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            # Output goes to the console (EC2 "Get system log"),
+            # /var/log/cloud-init-output.log and /var/log/app-bootstrap.log,
+            # which is also uploaded to CloudWatch Logs (stream
+            # bootstrap/<instance-id> in the app log group) before the
+            # readiness hook is completed, so it survives termination.
+            set -euo pipefail
+            BOOTSTRAP_LOG=/var/log/app-bootstrap.log
+            exec > >(tee -a "$BOOTSTRAP_LOG") 2>&1
+            STEP="instance metadata"
+            INSTANCE_ID=unknown
+
+            REGION="${AWS::Region}"
+            REGISTRY="${AWS::AccountId}.dkr.ecr.${AWS::Region}.${AWS::URLSuffix}"
+            IMAGE_REFERENCE="${AppImageReference}"
+            case "$IMAGE_REFERENCE" in
+              sha256:*) IMAGE="$REGISTRY/${AppRepositoryName}@$IMAGE_REFERENCE" ;;
+              *)        IMAGE="$REGISTRY/${AppRepositoryName}:$IMAGE_REFERENCE" ;;
+            esac
+
+            TOKEN="$(curl -sSf -X PUT http://169.254.169.254/latest/api/token \
+              -H "X-aws-ec2-metadata-token-ttl-seconds: 300")"
+            INSTANCE_ID="$(curl -sSf -H "X-aws-ec2-metadata-token: $TOKEN" \
+              http://169.254.169.254/latest/meta-data/instance-id)"
+
+            # Copy the last 500 lines of the bootstrap log to CloudWatch Logs
+            # (logs endpoint; the instance role may write to this log group).
+            ship_bootstrap_log() {
+              local stream="bootstrap/$INSTANCE_ID"
+              aws logs create-log-stream --region "$REGION" --log-group-name "${AppLogGroupName}" \
+                --log-stream-name "$stream" 2>/dev/null || true
+              python3 -c '
+            import json, sys, time
+            lines = open(sys.argv[1], errors="replace").read().splitlines()[-500:]
+            now = int(time.time() * 1000)
+            json.dump([{"timestamp": now, "message": line[:1000] or " "} for line in lines], sys.stdout)
+            ' "$BOOTSTRAP_LOG" > /tmp/bootstrap-log-events.json \
+                && aws logs put-log-events --region "$REGION" --log-group-name "${AppLogGroupName}" \
+                  --log-stream-name "$stream" --log-events file:///tmp/bootstrap-log-events.json >/dev/null \
+                && echo "Bootstrap log uploaded to ${AppLogGroupName}:$stream." \
+                || echo "Could not upload the bootstrap log to CloudWatch Logs." >&2
+            }
+
+            # Readiness hook: CONTINUE puts the instance in service, ABANDON
+            # makes Auto Scaling terminate and replace it.
+            complete_hook() {
+              aws autoscaling complete-lifecycle-action --region "$REGION" \
+                --auto-scaling-group-name "${AutoScalingGroupName}" \
+                --lifecycle-hook-name "${AppReadyHookName}" \
+                --instance-id "$INSTANCE_ID" --lifecycle-action-result "$1" \
+                && echo "Readiness hook completed with $1." \
+                || echo "Could not complete the lifecycle hook with $1." >&2
+            }
+            on_error() {
+              echo "BOOTSTRAP FAILED during step '$STEP' (line $1); abandoning the launch." >&2
+              ship_bootstrap_log
+              complete_hook ABANDON
+            }
+            trap 'on_error $LINENO' ERR
+
+            retry() {
+              local attempt
+              for attempt in 1 2 3 4 5; do
+                "$@" && return 0
+                echo "Attempt $attempt failed: $*" >&2
+                sleep $((attempt * 10))
+              done
+              return 1
+            }
+
+            command -v aws >/dev/null 2>&1 || { echo "AWS CLI missing from the AMI." >&2; false; }
+
+            # 1. Docker: from the AMI, or from the AL2023 repositories through
+            #    the S3 gateway endpoint (no internet access needed).
+            STEP="docker install"
+            if ! command -v docker >/dev/null 2>&1; then
+              echo "Docker is not in the AMI; installing it from the AL2023 repositories."
+              retry dnf install --assumeyes --setopt=timeout=30 --setopt=retries=2 docker
+            fi
+            systemctl enable --now docker
+
+            # 2. Pull the image once; restarts and reboots reuse the local copy.
+            STEP="ECR login"
+            # shellcheck disable=SC2329 # invoked through retry
+            ecr_login() {
+              aws ecr get-login-password --region "$REGION" \
+                | docker login --username AWS --password-stdin "$REGISTRY"
+            }
+            retry ecr_login
+
+            # Errors that a retry cannot fix (wrong reference, not an image,
+            # wrong platform, no permission) fail at once.
+            STEP="image pull ($IMAGE)"
+            pull_image() {
+              local attempt output
+              for attempt in 1 2 3 4 5; do
+                if output="$(docker pull "$IMAGE" 2>&1)"; then
+                  echo "$output"
+                  return 0
+                fi
+                echo "$output" >&2
+                case "$output" in
+                  *"unsupported media type"*|*"no matching manifest"*|*"manifest unknown"*|*"not found"*|*"denied"*)
+                    echo "Not retrying: $IMAGE is missing, not a runnable image, or not readable by the instance role. Check it with scripts/check-image.sh." >&2
+                    return 1 ;;
+                esac
+                echo "Attempt $attempt failed: docker pull $IMAGE" >&2
+                sleep $((attempt * 10))
+              done
+              return 1
+            }
+            pull_image
+            docker logout "$REGISTRY"
+
+            STEP="image platform check"
+            IMAGE_PLATFORM="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$IMAGE")"
+            case "$(uname -m)" in
+              x86_64) HOST_PLATFORM=linux/amd64 ;;
+              aarch64) HOST_PLATFORM=linux/arm64 ;;
+              *) HOST_PLATFORM="linux/$(uname -m)" ;;
+            esac
+            if [[ "$IMAGE_PLATFORM" != "$HOST_PLATFORM" ]]; then
+              echo "Image platform is $IMAGE_PLATFORM, but this instance is $HOST_PLATFORM. Rebuild with scripts/push-image.sh." >&2
+              false
+            fi
+
+            # 3. Run it as a systemd service.
+            STEP="container service"
+            install -d -m 0755 /etc/${ProjectName}
+            cat > /etc/${ProjectName}/app.env <<EOF
+            APP_ENV=${Environment}
+            APP_VERSION=$IMAGE_REFERENCE
+            UVICORN_PORT=${AppContainerPort}
+            UVICORN_FORWARDED_ALLOW_IPS=${VpcCidr}
+            EOF
+
+            cat > /etc/systemd/system/${ProjectName}-app.service <<EOF
+            [Unit]
+            Description=${ProjectName} FastAPI container
+            Requires=docker.service
+            After=docker.service
+
+            [Service]
+            Restart=always
+            RestartSec=5
+            TimeoutStopSec=45
+            ExecStartPre=-/usr/bin/docker rm --force app
+            ExecStart=/usr/bin/docker run --name app --rm \
+              --publish ${AppContainerPort}:${AppContainerPort} \
+              --env-file /etc/${ProjectName}/app.env \
+              --log-driver awslogs \
+              --log-opt awslogs-region=$REGION \
+              --log-opt awslogs-group=${AppLogGroupName} \
+              --log-opt awslogs-stream=$INSTANCE_ID \
+              --log-opt mode=non-blocking \
+              --log-opt max-buffer-size=4m \
+              $IMAGE
+            ExecStop=/usr/bin/docker stop --time 30 app
+
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+
+            systemctl daemon-reload
+            systemctl enable --now ${ProjectName}-app.service
+
+            # 4./5. Wait for the app, then let the instance into service.
+            STEP="health check (GET /health on port ${AppContainerPort})"
+            for _ in $(seq 60); do
+              if curl -sf "http://127.0.0.1:${AppContainerPort}/health"; then
+                echo
+                echo "Application is healthy; completing the readiness hook."
+                trap - ERR
+                complete_hook CONTINUE
+                ship_bootstrap_log
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "Application did not report healthy within 120s. Service and container output:" >&2
+            systemctl status --no-pager --lines=0 ${ProjectName}-app.service || true
+            journalctl -u ${ProjectName}-app.service --no-pager -n 50 || true
+            false
+
+# Consumed by main.yml via !GetAtt LaunchTemplateStack.Outputs.<Name>.
+Outputs:
+  LaunchTemplateId:
+    Description: Launch template ID.
+    Value: !Ref LaunchTemplate
+  LaunchTemplateLatestVersion:
+    Description: Latest launch template version, used by the Auto Scaling group.
+    Value: !GetAtt LaunchTemplate.LatestVersionNumber
+  AppLogGroupName:
+    Description: CloudWatch Logs group with the container output.
+    Value: !Ref AppLogGroup

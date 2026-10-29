@@ -1,0 +1,193 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  AWS E-Commerce Infrastructure - interface VPC endpoints that let the private
+  application instances reach ECR, CloudWatch Logs and (optionally) Systems
+  Manager without a NAT Gateway.
+
+# -----------------------------------------------------------------------------
+# Why these endpoints (app subnets have no NAT route when NatGatewayMode=none)
+#
+#   Endpoint      Used for                                     Required
+#   ecr.api       docker login (GetAuthorizationToken)         yes
+#   ecr.dkr       image manifests (docker pull)                yes
+#   s3 (gateway)  image layers and AL2023 dnf repositories     yes - already in
+#                                                              network/vpc.yml
+#   logs          awslogs Docker log driver                    yes
+#   autoscaling   CompleteLifecycleAction (readiness hook,     yes
+#                 compute/autoscaling.yml)
+#   ssm           Session Manager agent registration           EnableSessionManager
+#   ssmmessages   Session Manager shell channel                EnableSessionManager
+#
+# ec2messages is not created: SSM Agent 3.3.40.0+ (shipped with current AL2023
+# AMIs) uses ssmmessages instead. Add it here if an older AMI is used.
+#
+# Not needed: sts (instance credentials come from IMDS), ec2, kms (ECR uses
+# AES256), cloudformation (no cfn-signal; instance refresh uses the hook).
+#
+# Cost: each interface endpoint is billed $0.01 per AZ per hour (~$7.30/month
+# in us-east-2) plus $0.01/GB processed. 4 required + 2 Session Manager = 6
+# endpoints: ~$44/month with EndpointAzMode=single, ~$88/month with per-az.
+# single places every endpoint in AZ a only; instances in AZ b then reach it
+# across AZs, so an AZ a outage also stops bootstrapping and logging in AZ b.
+# Use per-az for prod.
+#
+# This stack is deployed in the compute stage only, so the network stage stays
+# free of hourly endpoint charges.
+# -----------------------------------------------------------------------------
+
+Metadata:
+  # Checked by scripts/deploy.sh. Set to IMPLEMENTED when this template is complete.
+  ImplementationStatus: IMPLEMENTED
+
+Parameters:
+  ProjectName:
+    Type: String
+    AllowedPattern: "^[a-z][a-z0-9-]{1,19}$"
+    Description: Project prefix for resource names.
+  Environment:
+    Type: String
+    AllowedValues: [dev, prod]
+    Description: Deployment environment.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC for the endpoints (NetworkStack.Outputs.VpcId).
+  AppSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private application subnets, AZ a first (NetworkStack.Outputs.AppSubnetIds).
+  AppSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group of the application instances, allowed to call the endpoints.
+  EndpointAzMode:
+    Type: String
+    Default: single
+    AllowedValues: [single, per-az]
+    Description: >-
+      'single' = endpoints in AZ a only (half the cost, AZ a is a dependency);
+      'per-az' = endpoints in both AZs (high availability).
+  EnableSessionManager:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Create the ssm and ssmmessages endpoints used by Session Manager.
+
+Conditions:
+  EndpointsPerAz: !Equals [!Ref EndpointAzMode, per-az]
+  SessionManagerEnabled: !Equals [!Ref EnableSessionManager, "true"]
+
+Resources:
+  # Interface endpoints accept HTTPS from the app instances only. Endpoints
+  # never initiate connections, so egress is replaced by a rule that matches
+  # nothing (same pattern as DbSecurityGroup).
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${ProjectName}-${Environment} VPC interface endpoints - HTTPS from app only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - Description: HTTPS from app instances
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref AppSecurityGroupId
+      SecurityGroupEgress:
+        - Description: No egress (replaces the default allow-all rule)
+          IpProtocol: "-1"
+          CidrIp: 127.0.0.1/32
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${Environment}-vpce-sg
+
+  # PrivateDnsEnabled makes the regular service hostnames (e.g.
+  # api.ecr.us-east-2.amazonaws.com) resolve to the endpoint ENIs, so the AWS
+  # CLI, Docker and the SSM agent need no endpoint-specific configuration.
+  # Requires EnableDnsSupport/EnableDnsHostnames on the VPC (set in vpc.yml).
+  EcrApiEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      VpcEndpointType: Interface
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ecr.api
+      PrivateDnsEnabled: true
+      SubnetIds: !If
+        - EndpointsPerAz
+        - !Ref AppSubnetIds
+        - [!Select [0, !Ref AppSubnetIds]]
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  EcrDkrEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      VpcEndpointType: Interface
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ecr.dkr
+      PrivateDnsEnabled: true
+      SubnetIds: !If
+        - EndpointsPerAz
+        - !Ref AppSubnetIds
+        - [!Select [0, !Ref AppSubnetIds]]
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  LogsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      VpcEndpointType: Interface
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.logs
+      PrivateDnsEnabled: true
+      SubnetIds: !If
+        - EndpointsPerAz
+        - !Ref AppSubnetIds
+        - [!Select [0, !Ref AppSubnetIds]]
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  AutoScalingEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      VpcEndpointType: Interface
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.autoscaling
+      PrivateDnsEnabled: true
+      SubnetIds: !If
+        - EndpointsPerAz
+        - !Ref AppSubnetIds
+        - [!Select [0, !Ref AppSubnetIds]]
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  SsmEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: SessionManagerEnabled
+    Properties:
+      VpcId: !Ref VpcId
+      VpcEndpointType: Interface
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
+      PrivateDnsEnabled: true
+      SubnetIds: !If
+        - EndpointsPerAz
+        - !Ref AppSubnetIds
+        - [!Select [0, !Ref AppSubnetIds]]
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+  SsmMessagesEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: SessionManagerEnabled
+    Properties:
+      VpcId: !Ref VpcId
+      VpcEndpointType: Interface
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssmmessages
+      PrivateDnsEnabled: true
+      SubnetIds: !If
+        - EndpointsPerAz
+        - !Ref AppSubnetIds
+        - [!Select [0, !Ref AppSubnetIds]]
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+
+Outputs:
+  EndpointSecurityGroupId:
+    Description: Security group attached to the interface endpoints.
+    Value: !Ref EndpointSecurityGroup

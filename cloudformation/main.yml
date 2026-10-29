@@ -1,8 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  [PARTIAL - network stage only] AWS E-Commerce Infrastructure - root stack.
-  Orchestrates the nested stacks that host the FastAPI application in app/. Deploy only via scripts/deploy.sh, which packages the nested
-  templates to S3 and refuses to deploy a stage that includes a placeholder.
+  [PARTIAL - network and compute stages] AWS E-Commerce Infrastructure - root
+  stack. Orchestrates the nested stacks that host the FastAPI application in
+  app/. Deploy only via scripts/deploy.sh, which packages the nested templates
+  to S3 and refuses to deploy a stage that includes a placeholder.
 
 # -----------------------------------------------------------------------------
 # Conventions (see docs/architecture.md)
@@ -15,10 +16,19 @@ Description: >-
 #   Cross-stack    : values flow between nested stacks via !GetAtt
 #                    <Stack>.Outputs.<Name>; no global Exports are used, so
 #                    environments cannot accidentally couple to each other.
-#   Stages         : DeploymentStage=network creates only NetworkStack and
-#                    SecurityGroupsStack; full also creates every stack marked
-#                    `Condition: IsFullDeployment`. Keep this in sync with
-#                    NETWORK_STAGE_TEMPLATES in scripts/deploy.sh.
+#   Stages         : each stage includes the previous one.
+#                      network  NetworkStack, SecurityGroupsStack
+#                      compute  + stacks marked `Condition: HasCompute`
+#                               (endpoints, IAM, ALB, launch template, ASG)
+#                      full     + stacks marked `Condition: IsFullDeployment`
+#                    Keep this in sync with NETWORK_STAGE_TEMPLATES and
+#                    COMPUTE_STAGE_TEMPLATES in scripts/deploy.sh.
+#   ECR            : the repository (storage/ecr.yml) is a separate stack,
+#                    <stack>-ecr, deployed once before any image is pushed. It
+#                    is not nested here: the image must exist before the
+#                    compute stage can start, and deleting this stack must not
+#                    delete the images. Its name follows the convention
+#                    <ProjectName>-<Environment>-api.
 #   WAF            : a CloudFront-scoped web ACL can only be created in
 #                    us-east-1, so networking/waf.yml is not nested here.
 #                    scripts/deploy.sh deploys it as <stack>-waf in us-east-1
@@ -53,6 +63,8 @@ Metadata:
       - Label:
           default: Application compute
         Parameters:
+          - AppImageReference
+          - AppAmiId
           - AppInstanceType
           - AppContainerPort
           - AppHealthCheckPath
@@ -60,6 +72,9 @@ Metadata:
           - AsgMaxSize
           - AsgDesiredCapacity
           - AlbCertificateArn
+          - AlbTestIngressCidr
+          - VpcEndpointAzMode
+          - EnableSessionManager
       - Label:
           default: Database
         Parameters:
@@ -83,10 +98,12 @@ Parameters:
     Default: full
     AllowedValues:
       - network
+      - compute
       - full
     Description: >-
-      'network' = VPC and security groups only; 'full' = every stack.
-      Set by scripts/deploy.sh --stage.
+      'network' = VPC and security groups only; 'compute' = network plus VPC
+      endpoints, IAM, ALB, launch template and Auto Scaling group; 'full' =
+      every stack. Set by scripts/deploy.sh --stage.
 
   ProjectName:
     Type: String
@@ -129,6 +146,27 @@ Parameters:
   AvailabilityZoneB:
     Type: AWS::EC2::AvailabilityZone::Name
     Description: Second Availability Zone; must differ from AvailabilityZoneA.
+
+  AppImageReference:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^sha256:[a-f0-9]{64}$|^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$"
+    ConstraintDescription: Must be an image digest (sha256:<64 hex>) or an image tag.
+    Description: >-
+      Application image in the <ProjectName>-<Environment>-api ECR repository:
+      a digest (sha256:..., preferred) or an immutable tag (git SHA). Passed
+      by scripts/deploy.sh --image; required for the compute and full stages.
+
+  AppAmiId:
+    Type: String
+    Default: ""
+    AllowedPattern: "^$|^ami-[0-9a-f]{8,17}$"
+    ConstraintDescription: Must be an AMI ID (ami-...).
+    Description: >-
+      x86_64 AMI for the application instances. Pinned by scripts/deploy.sh
+      (resolved once from the AL2023 SSM parameter, changed only with --ami),
+      so a new AMI release never rolls the instances during an unrelated
+      deployment.
 
   AppInstanceType:
     Type: String
@@ -178,6 +216,34 @@ Parameters:
     Description: >-
       Optional ACM certificate ARN for the ALB HTTPS listener. Leave empty
       until a domain is configured.
+
+  AlbTestIngressCidr:
+    Type: String
+    Default: ""
+    Description: >-
+      Optional IPv4 CIDR (your /32) allowed to reach the ALB directly while
+      CloudFront does not exist yet. Pass with scripts/deploy.sh --param; never
+      commit it.
+
+  VpcEndpointAzMode:
+    Type: String
+    Default: per-az
+    AllowedValues:
+      - single
+      - per-az
+    Description: >-
+      Interface VPC endpoints in AZ a only ('single', half the cost) or in both
+      AZs ('per-az', no cross-AZ dependency).
+
+  EnableSessionManager:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >-
+      Grant the instances Session Manager access and create the ssm and
+      ssmmessages endpoints (2 extra interface endpoints).
 
   DbInstanceClass:
     Type: String
@@ -231,6 +297,17 @@ Parameters:
       scripts/deploy.sh; required for the full stage.
 
 Rules:
+  ComputeStageRequiresImage:
+    RuleCondition: !Not [!Equals [!Ref DeploymentStage, network]]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref AppImageReference, ""]]
+        AssertDescription: >-
+          The compute and full stages need AppImageReference (pass
+          scripts/deploy.sh --image <digest-or-tag>).
+      - Assert: !Not [!Equals [!Ref AppAmiId, ""]]
+        AssertDescription: >-
+          The compute and full stages need AppAmiId (scripts/deploy.sh pins it).
+
   FullStageRequiresWebAcl:
     RuleCondition: !Equals [!Ref DeploymentStage, full]
     Assertions:
@@ -242,13 +319,18 @@ Rules:
 Conditions:
   # The ALB serves HTTPS only once a certificate is supplied.
   HasAlbCertificate: !Not [!Equals [!Ref AlbCertificateArn, ""]]
-  # Every stack except NetworkStack and SecurityGroupsStack.
+  # Stacks of the compute stage (also part of the full stage).
+  HasCompute: !Not [!Equals [!Ref DeploymentStage, network]]
+  # Stacks of the full stage only.
   IsFullDeployment: !Equals [!Ref DeploymentStage, full]
 
 # Nested stacks are grouped by layer. Until the child templates
 # expose real Outputs, ordering is expressed with DependsOn. When a child is
 # implemented, uncomment its TODO parameters (which use !GetAtt and make the
 # dependency implicit) and drop the matching DependsOn entries.
+# A compute-stage stack must not depend on (DependsOn or !GetAtt) a full-stage
+# stack, which does not exist in the compute stage: wire such values with
+# !If [IsFullDeployment, !GetAtt ..., !Ref AWS::NoValue] instead.
 Resources:
   # --- Foundation -------------------------------------------------------------
   NetworkStack:
@@ -279,6 +361,7 @@ Resources:
         VpcId: !GetAtt NetworkStack.Outputs.VpcId
         AppContainerPort: !Ref AppContainerPort
         AlbIngressPort: !If [HasAlbCertificate, 443, 80]
+        AlbTestIngressCidr: !Ref AlbTestIngressCidr
       Tags:
         - Key: Component
           Value: security-groups
@@ -324,37 +407,23 @@ Resources:
         - Key: Component
           Value: storage
 
-  ContainerRegistryStack:
-    Type: AWS::CloudFormation::Stack
-    Condition: IsFullDeployment
-    Properties:
-      TemplateURL: ./storage/ecr.yml
-      TimeoutInMinutes: 15
-      Parameters:
-        ProjectName: !Ref ProjectName
-        Environment: !Ref Environment
-      Tags:
-        - Key: Component
-          Value: container-registry
-
   IamStack:
     Type: AWS::CloudFormation::Stack
-    Condition: IsFullDeployment
-    DependsOn:
-      - SecretsStack
-      - StorageStack
-      - ContainerRegistryStack
-      - DatabaseStack
+    Condition: HasCompute
     Properties:
       TemplateURL: ./security/iam.yml
       TimeoutInMinutes: 15
       Parameters:
         ProjectName: !Ref ProjectName
         Environment: !Ref Environment
-        # TODO: EcrRepositoryArn:   !GetAtt ContainerRegistryStack.Outputs.RepositoryArn
-        # TODO: AppSecretArn:       !GetAtt SecretsStack.Outputs.AppSecretArn
-        # TODO: AssetsBucketArn:    !GetAtt StorageStack.Outputs.AssetsBucketArn
-        # TODO: DbMasterSecretArn:  !GetAtt DatabaseStack.Outputs.MasterUserSecretArn
+        AppRepositoryName: !Sub ${ProjectName}-${Environment}-api
+        AppLogGroupName: !Sub /${ProjectName}/${Environment}/app
+        AutoScalingGroupName: !Sub ${ProjectName}-${Environment}-app-asg
+        EnableSessionManager: !Ref EnableSessionManager
+        # TODO (full stage, via !If [IsFullDeployment, ...]):
+        #   AppSecretArn:       !GetAtt SecretsStack.Outputs.AppSecretArn
+        #   AssetsBucketArn:    !GetAtt StorageStack.Outputs.AssetsBucketArn
+        #   DbMasterSecretArn:  !GetAtt DatabaseStack.Outputs.MasterUserSecretArn
       Tags:
         - Key: Component
           Value: iam
@@ -383,38 +452,50 @@ Resources:
           Value: database
 
   # --- Compute ----------------------------------------------------------------
+  # Private connectivity to ECR, CloudWatch Logs and SSM for the app subnets,
+  # which have no NAT route when NatGatewayMode=none.
+  EndpointsStack:
+    Type: AWS::CloudFormation::Stack
+    Condition: HasCompute
+    Properties:
+      TemplateURL: ./network/endpoints.yml
+      TimeoutInMinutes: 20
+      Parameters:
+        ProjectName: !Ref ProjectName
+        Environment: !Ref Environment
+        VpcId: !GetAtt NetworkStack.Outputs.VpcId
+        AppSubnetIds: !GetAtt NetworkStack.Outputs.AppSubnetIds
+        AppSecurityGroupId: !GetAtt SecurityGroupsStack.Outputs.AppSecurityGroupId
+        EndpointAzMode: !Ref VpcEndpointAzMode
+        EnableSessionManager: !Ref EnableSessionManager
+      Tags:
+        - Key: Component
+          Value: vpc-endpoints
+
   LoadBalancerStack:
     Type: AWS::CloudFormation::Stack
-    Condition: IsFullDeployment
-    DependsOn:
-      - NetworkStack
-      - SecurityGroupsStack
-      - StorageStack
+    Condition: HasCompute
     Properties:
       TemplateURL: ./compute/alb.yml
       TimeoutInMinutes: 20
       Parameters:
         ProjectName: !Ref ProjectName
         Environment: !Ref Environment
+        VpcId: !GetAtt NetworkStack.Outputs.VpcId
+        PublicSubnetIds: !GetAtt NetworkStack.Outputs.PublicSubnetIds
+        AlbSecurityGroupId: !GetAtt SecurityGroupsStack.Outputs.AlbSecurityGroupId
         AppContainerPort: !Ref AppContainerPort
         AppHealthCheckPath: !Ref AppHealthCheckPath
         AlbCertificateArn: !Ref AlbCertificateArn
-        # TODO: VpcId:                  !GetAtt NetworkStack.Outputs.VpcId
-        # TODO: PublicSubnetIds:        !GetAtt NetworkStack.Outputs.PublicSubnetIds
-        # TODO: AlbSecurityGroupId:     !GetAtt SecurityGroupsStack.Outputs.AlbSecurityGroupId
-        # TODO: AccessLogsBucketName:   !GetAtt StorageStack.Outputs.LogsBucketName
+        # TODO (full stage): AccessLogsBucketName:
+        #   !If [IsFullDeployment, !GetAtt StorageStack.Outputs.LogsBucketName, !Ref AWS::NoValue]
       Tags:
         - Key: Component
           Value: load-balancer
 
   LaunchTemplateStack:
     Type: AWS::CloudFormation::Stack
-    Condition: IsFullDeployment
-    DependsOn:
-      - SecurityGroupsStack
-      - IamStack
-      - ContainerRegistryStack
-      - SecretsStack
+    Condition: HasCompute
     Properties:
       TemplateURL: ./compute/ec2.yml
       TimeoutInMinutes: 15
@@ -424,23 +505,32 @@ Resources:
         AppInstanceType: !Ref AppInstanceType
         AppContainerPort: !Ref AppContainerPort
         LogRetentionDays: !Ref LogRetentionDays
-        # TODO: AppSecurityGroupId:     !GetAtt SecurityGroupsStack.Outputs.AppSecurityGroupId
-        # TODO: InstanceProfileArn:     !GetAtt IamStack.Outputs.AppInstanceProfileArn
-        # TODO: EcrRepositoryUri:       !GetAtt ContainerRegistryStack.Outputs.RepositoryUri
-        # TODO: AppSecretArn:           !GetAtt SecretsStack.Outputs.AppSecretArn
-        # TODO: DbMasterSecretArn:      !GetAtt DatabaseStack.Outputs.MasterUserSecretArn
-        # TODO: DbEndpointAddress:      !GetAtt DatabaseStack.Outputs.EndpointAddress
+        AppSecurityGroupId: !GetAtt SecurityGroupsStack.Outputs.AppSecurityGroupId
+        InstanceProfileArn: !GetAtt IamStack.Outputs.AppInstanceProfileArn
+        AppRepositoryName: !Sub ${ProjectName}-${Environment}-api
+        AppImageReference: !Ref AppImageReference
+        AppAmiId: !Ref AppAmiId
+        VpcCidr: !GetAtt NetworkStack.Outputs.VpcCidr
+        AppLogGroupName: !Sub /${ProjectName}/${Environment}/app
+        AutoScalingGroupName: !Sub ${ProjectName}-${Environment}-app-asg
+        AppReadyHookName: app-ready
+        # TODO (full stage, via !If [IsFullDeployment, ...]):
+        #   AppSecretArn:       !GetAtt SecretsStack.Outputs.AppSecretArn
+        #   DbMasterSecretArn:  !GetAtt DatabaseStack.Outputs.MasterUserSecretArn
+        #   DbEndpointAddress:  !GetAtt DatabaseStack.Outputs.EndpointAddress
       Tags:
         - Key: Component
           Value: launch-template
 
+  # DependsOn EndpointsStack: instances need the endpoints during first boot
+  # (docker login, pull, logs, readiness hook), and nothing else orders the
+  # two stacks. A new launch template version (image or AMI change) triggers
+  # a CloudFormation-managed instance refresh (UpdatePolicy in autoscaling.yml).
   AutoScalingStack:
     Type: AWS::CloudFormation::Stack
-    Condition: IsFullDeployment
+    Condition: HasCompute
     DependsOn:
-      - NetworkStack
-      - LoadBalancerStack
-      - LaunchTemplateStack
+      - EndpointsStack
     Properties:
       TemplateURL: ./compute/autoscaling.yml
       TimeoutInMinutes: 30
@@ -450,10 +540,14 @@ Resources:
         AsgMinSize: !Ref AsgMinSize
         AsgMaxSize: !Ref AsgMaxSize
         AsgDesiredCapacity: !Ref AsgDesiredCapacity
-        # TODO: AppSubnetIds:           !GetAtt NetworkStack.Outputs.AppSubnetIds
-        # TODO: LaunchTemplateId:       !GetAtt LaunchTemplateStack.Outputs.LaunchTemplateId
-        # TODO: LaunchTemplateVersion:  !GetAtt LaunchTemplateStack.Outputs.LaunchTemplateLatestVersion
-        # TODO: TargetGroupArn:         !GetAtt LoadBalancerStack.Outputs.TargetGroupArn
+        AutoScalingGroupName: !Sub ${ProjectName}-${Environment}-app-asg
+        AppReadyHookName: app-ready
+        AppSubnetIds: !GetAtt NetworkStack.Outputs.AppSubnetIds
+        LaunchTemplateId: !GetAtt LaunchTemplateStack.Outputs.LaunchTemplateId
+        LaunchTemplateVersion: !GetAtt LaunchTemplateStack.Outputs.LaunchTemplateLatestVersion
+        TargetGroupArn: !GetAtt LoadBalancerStack.Outputs.TargetGroupArn
+        TargetGroupFullName: !GetAtt LoadBalancerStack.Outputs.TargetGroupFullName
+        AlbFullName: !GetAtt LoadBalancerStack.Outputs.AlbFullName
       Tags:
         - Key: Component
           Value: autoscaling
@@ -505,10 +599,7 @@ Resources:
         - Key: Component
           Value: monitoring
 
-# TODO: expose root outputs once the child stacks are implemented, e.g.
-#   ApplicationUrl:    !GetAtt CdnStack.Outputs.DistributionDomainName
-#   AlbDnsName:        !GetAtt LoadBalancerStack.Outputs.AlbDnsName
-#   EcrRepositoryUri:  !GetAtt ContainerRegistryStack.Outputs.RepositoryUri
+# TODO (full stage): ApplicationUrl from CdnStack.Outputs.DistributionDomainName
 Outputs:
   StackEnvironment:
     Description: Environment this root stack was deployed for.
@@ -519,3 +610,41 @@ Outputs:
   VpcId:
     Description: VPC ID from the network stack.
     Value: !GetAtt NetworkStack.Outputs.VpcId
+  VpcCidr:
+    Description: VPC CIDR block from the network stack.
+    Value: !GetAtt NetworkStack.Outputs.VpcCidr
+  AlbDnsName:
+    Condition: HasCompute
+    Description: Public DNS name of the ALB.
+    Value: !GetAtt LoadBalancerStack.Outputs.AlbDnsName
+  AlbUrl:
+    Condition: HasCompute
+    Description: Direct ALB URL (reachable only from CloudFront or AlbTestIngressCidr).
+    Value: !Sub
+      - "${Scheme}://${DnsName}"
+      - Scheme: !If [HasAlbCertificate, https, http]
+        DnsName: !GetAtt LoadBalancerStack.Outputs.AlbDnsName
+  AlbArn:
+    Condition: HasCompute
+    Description: Application Load Balancer ARN.
+    Value: !GetAtt LoadBalancerStack.Outputs.AlbArn
+  TargetGroupArn:
+    Condition: HasCompute
+    Description: ALB target group ARN.
+    Value: !GetAtt LoadBalancerStack.Outputs.TargetGroupArn
+  AutoScalingGroupName:
+    Condition: HasCompute
+    Description: Application Auto Scaling group name.
+    Value: !GetAtt AutoScalingStack.Outputs.AutoScalingGroupName
+  AppLogGroupName:
+    Condition: HasCompute
+    Description: CloudWatch Logs group with the container output.
+    Value: !GetAtt LaunchTemplateStack.Outputs.AppLogGroupName
+  AppImageReference:
+    Condition: HasCompute
+    Description: Image digest or tag the launch template runs.
+    Value: !Ref AppImageReference
+  AppAmiId:
+    Condition: HasCompute
+    Description: AMI the launch template uses.
+    Value: !Ref AppAmiId

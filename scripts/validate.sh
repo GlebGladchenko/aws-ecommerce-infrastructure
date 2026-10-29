@@ -63,7 +63,7 @@ log "Implementation status"
 placeholders="$(grep -rlE '^[[:space:]]*ImplementationStatus:[[:space:]]*PLACEHOLDER' "$CFN_DIR" || true)"
 if [[ -n "$placeholders" ]]; then
   echo "Templates still marked PLACEHOLDER (not deployable):"
-  echo "$placeholders" | sed "s|$REPO_ROOT/|  - |"
+  echo "${placeholders//$REPO_ROOT\//  - }"
 else
   echo "All templates are marked IMPLEMENTED."
 fi
